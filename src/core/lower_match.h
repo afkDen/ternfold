@@ -12,6 +12,7 @@ typedef struct {
     void *context;
     const TfTypedProgram *typed;
     TfCoreLowerTypes *types;
+    size_t *remaining_work; /* shared across this program, including nested matches */
     void *(*allocate)(void *, size_t count, size_t width);
     bool (*failed)(const void *);
     TfCoreValueId (*invariant)(void *, const TfAstNode *);

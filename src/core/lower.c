@@ -36,6 +36,7 @@ typedef struct {
     MachineTarget *machines; /* indexed by original concrete machine type ID */
     BindingUndo *undo;
     size_t undo_count, undo_capacity, lift_depth;
+    size_t scratch_bytes, match_work;
     CaptureLink ***module_captures; /* indexed by module ID then AST node ID */
     const TfResolvedModule *module;
     Wrapper **wrappers; /* chains keyed by original concrete function type ID */
@@ -47,14 +48,17 @@ typedef struct {
     TfCoreLowerIssue issue;
     bool failed;
 } Lower;
-enum { LOWER_DEPTH = 160 };
+enum { LOWER_DEPTH = 160, LOWER_SCRATCH = 256 * 1024 * 1024, LOWER_MATCH_WORK = 64 * 1024 * 1024 };
 
 static void *scratch_allocate(void *context, size_t size) {
     Lower *l = context;
     Scratch *chunk;
     if (size > SIZE_MAX-sizeof *chunk) return NULL;
-    chunk = l->allocator.allocate(l->allocator.context,sizeof *chunk+size);
+    const size_t needed=sizeof *chunk+size;
+    if (needed > l->scratch_bytes) return NULL;
+    chunk = l->allocator.allocate(l->allocator.context,needed);
     if (chunk == NULL) return NULL;
+    l->scratch_bytes-=needed;
     chunk->next=l->scratch;
     l->scratch=chunk;
     return chunk+1;
@@ -622,7 +626,7 @@ static bool match_tag(void *context, TfNodeId id, size_t *out) {
 static TfCoreValueId matching(Lower *l, TfCoreBlockId b, const TfAstNode *n, TfCoreTypeId type) {
     const TfCoreValueId scrutinee=expression(l,b,n->as.matching.value);
     if (l->failed) return 0;
-    const TfCoreMatchBuilder builder={.context=l,.typed=l->typed,.types=l->types,
+    const TfCoreMatchBuilder builder={.context=l,.typed=l->typed,.types=l->types,.remaining_work=&l->match_work,
         .allocate=match_allocate,.failed=match_failed,.invariant=match_invariant,.block=match_block,
         .emit=match_emit,.constant=match_constant,.expression=match_expression,.yield=match_yield,
         .unreachable=match_unreachable,.bind=match_bind,.variant_tag=match_tag};
@@ -907,7 +911,7 @@ static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeI
 
 TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
                        const TfAllocator *allocator, TfCoreLowerIssue *issue) {
-    Lower l={.allocator=tf_allocator(allocator)};
+    Lower l={.allocator=tf_allocator(allocator),.scratch_bytes=LOWER_SCRATCH,.match_work=LOWER_MATCH_WORK};
     TfStatus status=TF_HOST_ERROR;
     if (issue!=NULL) *issue=(TfCoreLowerIssue){0};
     if (out==NULL) return TF_HOST_ERROR;

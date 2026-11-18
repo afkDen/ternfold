@@ -65,8 +65,9 @@ static bool invalid(const Match *m, const TfAstNode *n) {
 }
 
 static bool spend(Match *m, size_t units) {
-    if (units > m->work) return false;
+    if (units > m->work || units > *m->builder->remaining_work) return false;
     m->work -= units;
+    *m->builder->remaining_work -= units;
     return true;
 }
 
