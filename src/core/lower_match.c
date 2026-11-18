@@ -20,6 +20,7 @@ struct Job {
     const Row *rows;
     size_t count;
     TfCoreBlockId block;
+    const TfCoreMatchFact *facts;
 };
 
 /* Row links are one-based indices into a split's entries. Each bucket and
@@ -267,7 +268,8 @@ static bool expand(Match *m, const Split *s, TfCoreBlockId block, size_t tag,
     return true;
 }
 
-static bool schedule(Match *m, const Split *s, const Bucket *bucket, TfCoreBlockId block) {
+static bool schedule(Match *m, const Split *s, const Bucket *bucket, TfCoreBlockId block,
+                     const TfCoreMatchFact *facts) {
     const Rows exact=bucket != NULL ? bucket->rows : (Rows){0};
     if (block == 0) return false;
     if (exact.count > SIZE_MAX-s->residual.count) return false;
@@ -300,7 +302,7 @@ static bool schedule(Match *m, const Split *s, const Bucket *bucket, TfCoreBlock
             b=s->entries[b-1].next;
         } else return invalid(m,s->test->pattern);
     }
-    *job=(Job){m->jobs,rows,count,block};
+    *job=(Job){m->jobs,rows,count,block,facts};
     m->jobs=job;
     return true;
 }
@@ -322,6 +324,38 @@ static bool branch(Match *m, TfCoreBlockId block, TfCoreValueId value, TfCoreOpe
     return finish(m,block,m->builder->emit(m->builder->context,block,m->result,op,span),span);
 }
 
+static bool allows(Match *m, const TfCoreMatchFact *fact, TfCoreValueId subject, size_t tag,
+                    bool *out) {
+    *out=false;
+    for (; fact!=NULL; fact=fact->prior) {
+        if (!spend(m,1)) return false;
+        if (fact->subject!=subject) continue;
+        /* The newest exact fact was established only on a possible path. */
+        if (fact->exact!=SIZE_MAX) { *out=tag==fact->exact; return true; }
+        if (!spend(m,fact->excluded_count)) return false;
+        for (size_t i=0; i<fact->excluded_count; ++i)
+            if (tag==fact->excluded[i].tag) return true;
+    }
+    *out=true;
+    return true;
+}
+
+static bool default_possible(Match *m, const TfCoreMatchFact *fallback, size_t tags, bool *out) {
+    for (const TfCoreMatchFact *f=fallback->prior; f!=NULL; f=f->prior) {
+        if (!spend(m,1)) return false;
+        if (f->subject!=fallback->subject) continue;
+        if (f->exact!=SIZE_MAX) return allows(m,fallback,fallback->subject,f->exact,out);
+        /* With multiple exclusions, check the finite domain below. */
+        for (size_t tag=0; tag<tags; ++tag) {
+            if (!allows(m,fallback,fallback->subject,tag,out)) return false;
+            if (*out) return true;
+        }
+        return true;
+    }
+    *out=fallback->excluded_count<tags;
+    return true;
+}
+
 static bool finite(Match *m, const Split *s) {
     const TfCoreMatchBuilder *b=m->builder;
     const TfSpan span=s->test->pattern->span;
@@ -330,23 +364,47 @@ static bool finite(Match *m, const Split *s) {
         for (size_t i=0; i<s->bucket_count; ++i) groups[s->buckets[i].tag]=&s->buckets[i];
         const TfCoreBlockId yes=b->block(b->context,span);
         const TfCoreBlockId no=b->block(b->context,span);
-        return schedule(m,s,groups[0],no) && schedule(m,s,groups[1],yes) &&
-               branch(m,s->job->block,s->test->value,
+        TfCoreMatchFact *facts=scratch(m,2,sizeof *facts);
+        if (facts==NULL || yes==0 || no==0) return false;
+        for (size_t tag=0; tag<2; ++tag) {
+            const TfCoreBlockId block=tag==0 ? no : yes;
+            bool possible;
+            if (!allows(m,s->job->facts,s->test->value,tag,&possible)) return false;
+            if (!possible) b->unreachable(b->context,block,span);
+            else {
+                facts[tag]=(TfCoreMatchFact){.prior=s->job->facts,.subject=s->test->value,.exact=tag};
+                if (!schedule(m,s,groups[tag],block,&facts[tag])) return false;
+            }
+        }
+        return branch(m,s->job->block,s->test->value,
                       (TfCoreOperation){.kind=TF_CORE_OP_IF,.as.branch={yes,no}},span);
     }
     TfCoreTagCase *cases=scratch(m,s->bucket_count,sizeof *cases);
-    if (cases == NULL) return false;
+    TfCoreMatchFact *facts=scratch(m,s->bucket_count,sizeof *facts);
+    if (cases == NULL || facts == NULL) return false;
     TfCoreBlockId fallback=0;
-    if (s->bucket_count < s->tags) {
-        fallback=b->block(b->context,span);
-        if (!schedule(m,s,NULL,fallback)) return false;
-    }
+    if (s->bucket_count < s->tags) fallback=b->block(b->context,span);
     for (size_t i=0; i<s->bucket_count; ++i) {
         const Bucket *bucket=&s->buckets[i];
         const TfSpan origin=s->entries[bucket->rows.first-1].test->pattern->span;
         const TfCoreBlockId block=b->block(b->context,origin);
+        bool possible;
+        if (block==0 || !allows(m,s->job->facts,s->test->value,bucket->tag,&possible)) return false;
         cases[i]=(TfCoreTagCase){bucket->tag,block};
-        if (!schedule(m,s,bucket,block)) return false;
+        if (!possible) b->unreachable(b->context,block,origin);
+        else {
+            facts[i]=(TfCoreMatchFact){.prior=s->job->facts,.subject=s->test->value,.exact=bucket->tag};
+            if (!schedule(m,s,bucket,block,&facts[i])) return false;
+        }
+    }
+    if (fallback!=0) {
+        TfCoreMatchFact *fact=scratch(m,1,sizeof *fact);
+        bool possible;
+        if (fact==NULL) return false;
+        *fact=(TfCoreMatchFact){s->job->facts,s->test->value,SIZE_MAX,cases,s->bucket_count};
+        if (!default_possible(m,fact,s->tags,&possible)) return false;
+        if (!possible) b->unreachable(b->context,fallback,span);
+        else if (!schedule(m,s,NULL,fallback,fact)) return false;
     }
     return branch(m,s->job->block,s->test->value,(TfCoreOperation){
         .kind=TF_CORE_OP_SWITCH_TAG,.as.switch_tag={cases,s->bucket_count,fallback}},span);
@@ -368,14 +426,14 @@ static bool open_literals(Match *m, const Split *s) {
             .kind=TF_CORE_OP_BINARY,.operands={args,2},.as.binary=TF_CORE_BINARY_EQUAL},span);
         const TfCoreBlockId yes=b->block(b->context,span);
         const TfCoreBlockId no=b->block(b->context,span);
-        if (test == 0 || no == 0 || !schedule(m,s,bucket,yes) ||
+        if (test == 0 || no == 0 || !schedule(m,s,bucket,yes,s->job->facts) ||
             !branch(m,current,test,(TfCoreOperation){.kind=TF_CORE_OP_IF,.as.branch={yes,no}},span))
             return false;
         current=no;
     }
     /* Equality cannot prove an empty open domain. A checked matrix always
      * leaves binder/wildcard rows (or rows testing other occurrences) here. */
-    return schedule(m,s,NULL,current);
+    return schedule(m,s,NULL,current,s->job->facts);
 }
 
 static bool lower_job(Match *m, const Job *job) {
@@ -393,7 +451,7 @@ static bool lower_job(Match *m, const Job *job) {
             if (!b->bind(b->context,c->pattern->id,c->value)) return false;
         const TfAstNode *body=node(first.arm->as.arm.body);
         if (body == NULL) return invalid(m,first.arm);
-        return finish(m,job->block,b->expression(b->context,job->block,body->id),body->span);
+        return finish(m,job->block,b->expression(b->context,job->block,body->id,job->facts),body->span);
     }
 
     TfCoreProgramData view={0};
@@ -435,7 +493,7 @@ TfCoreValueId tf_core_lower_match(const TfCoreMatchBuilder *builder, TfCoreBlock
         cells[i]=(Cell){NULL,pattern,scrutinee};
         rows[i]=(Row){arm,ignored(pattern) ? NULL : &cells[i]};
     }
-    Job root={NULL,rows,arms.count,block};
+    Job root={NULL,rows,arms.count,block,builder->inherited};
     m.jobs=&root;
     while (m.jobs != NULL) {
         const Job *job=m.jobs;

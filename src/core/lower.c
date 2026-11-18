@@ -37,6 +37,7 @@ typedef struct {
     BindingUndo *undo;
     size_t undo_count, undo_capacity, lift_depth;
     size_t scratch_bytes, match_work;
+    const TfCoreMatchFact *match_facts;
     CaptureLink ***module_captures; /* indexed by module ID then AST node ID */
     const TfResolvedModule *module;
     Wrapper **wrappers; /* chains keyed by original concrete function type ID */
@@ -203,6 +204,36 @@ static TfCoreValueId expression(Lower *l, TfCoreBlockId block, TfNodeId id);
 static TfCoreFunctionId builtin_wrapper(Lower *l, const TfAstNode *n,
                                         const TfResolvedSymbol *s, TfCoreTypeId type);
 
+static TfCoreValueId under_match_facts(Lower *l, TfCoreBlockId block, TfNodeId id,
+                                       const TfCoreMatchFact *facts) {
+    const TfCoreMatchFact *prior=l->match_facts;
+    l->match_facts=facts;
+    const TfCoreValueId result=expression(l,block,id);
+    l->match_facts=prior;
+    return result;
+}
+
+static bool bool_possible(const Lower *l, TfCoreValueId value, size_t truth) {
+    for (const TfCoreMatchFact *f=l->match_facts; f!=NULL; f=f->prior)
+        if (f->subject==value && f->exact!=SIZE_MAX) return f->exact==truth;
+    return true;
+}
+
+static void end_dead(Lower *l, TfCoreBlockId block, TfSpan span) {
+    if (l->failed) return;
+    if (block==0 || block>l->block_count) { (void)fail_at(l,TF_CORE_LOWER_INVARIANT,NULL); return; }
+    l->blocks[block-1].block.terminator=(TfCoreTerminator){TF_CORE_UNREACHABLE,0,origin(l,span)};
+}
+
+static void bool_arm(Lower *l, TfCoreBlockId block, TfCoreValueId condition, size_t truth,
+                     TfNodeId body, TfSpan span) {
+    if (l->failed) return;
+    if (!bool_possible(l,condition,truth)) { end_dead(l,block,span); return; }
+    const TfCoreMatchFact fact={.prior=l->match_facts,.subject=condition,.exact=truth};
+    const TfCoreValueId value=under_match_facts(l,block,body,&fact);
+    finish(l,block,value,span);
+}
+
 static TfCoreValueId literal(Lower *l, TfCoreBlockId b, const TfAstNode *n, TfCoreTypeId type) {
     const TfLiteralValue *value = tf_typed_program_literal(l->typed,n->id);
     TfCoreConstant k = {.type=type};
@@ -264,11 +295,14 @@ static TfCoreValueId operation(Lower *l, TfCoreBlockId b, const TfAstNode *n, Tf
     if (op==TF_AND_AND || op==TF_OR_OR) {
         const TfCoreBlockId evaluated=new_block(l,node(n->as.binary.right)->span);
         const TfCoreBlockId skipped=new_block(l,span);
-        args[1]=expression(l,evaluated,n->as.binary.right);
-        finish(l,evaluated,args[1],node(n->as.binary.right)->span);
-        args[1]=emit_const(l,skipped,(TfCoreConstant){.kind=TF_CORE_CONSTANT_BOOL,.type=type,
-                            .as.boolean=op==TF_OR_OR ? 1u : 0u},span);
-        finish(l,skipped,args[1],span);
+        const size_t evaluate_when=op==TF_AND_AND ? 1u : 0u;
+        bool_arm(l,evaluated,args[0],evaluate_when,n->as.binary.right,node(n->as.binary.right)->span);
+        if (!bool_possible(l,args[0],1u-evaluate_when)) end_dead(l,skipped,span);
+        else {
+            args[1]=emit_const(l,skipped,(TfCoreConstant){.kind=TF_CORE_CONSTANT_BOOL,.type=type,
+                                .as.boolean=op==TF_OR_OR ? 1u : 0u},span);
+            finish(l,skipped,args[1],span);
+        }
         return if_op(l,b,type,args[0],op==TF_AND_AND ? evaluated : skipped,
                      op==TF_AND_AND ? skipped : evaluated,span);
     }
@@ -564,9 +598,11 @@ static TfCoreValueId closure(Lower *l, TfCoreBlockId block, const TfAstNode *n, 
     }
     const TfCoreFunctionId outer=l->function;
     WorkBlock *outer_blocks=l->blocks;
+    const TfCoreMatchFact *outer_facts=l->match_facts;
     const size_t outer_count=l->block_count, outer_capacity=l->block_capacity, outer_values=l->value_count;
     const size_t undo_base=l->undo_count;
     l->function=id; l->blocks=NULL; l->block_count=0; l->block_capacity=0; l->value_count=0; ++l->lift_depth;
+    l->match_facts=NULL; /* A lifted function has its own ValueId namespace. */
     TfCoreFunction out={.kind=TF_CORE_FUNCTION_ORDINARY,
         .name={(const unsigned char *)"$lambda",sizeof "$lambda"-1},.module=tf_core_lower_module_name(l->module),
         .span=origin(l,n->span),.parameters=parameters_out,.parameter_count=params.count,
@@ -591,6 +627,7 @@ static TfCoreValueId closure(Lower *l, TfCoreBlockId block, const TfAstNode *n, 
     }
     --l->lift_depth;
     l->function=outer; l->blocks=outer_blocks;
+    l->match_facts=outer_facts;
     l->block_count=outer_count; l->block_capacity=outer_capacity; l->value_count=outer_values;
     return emit(l,block,type,(TfCoreOperation){.kind=TF_CORE_OP_CLOSURE,
         .operands={args,count},.as.function=id},n->span);
@@ -607,14 +644,11 @@ static TfCoreValueId match_emit(void *l, TfCoreBlockId b, TfCoreTypeId type, TfC
 static TfCoreValueId match_constant(void *l, TfCoreBlockId b, TfCoreConstant k, TfSpan span) {
     return emit_const(l,b,k,span);
 }
-static TfCoreValueId match_expression(void *l, TfCoreBlockId b, TfNodeId id) { return expression(l,b,id); }
-static void match_yield(void *l, TfCoreBlockId b, TfCoreValueId value, TfSpan span) { finish(l,b,value,span); }
-static void match_unreachable(void *context, TfCoreBlockId b, TfSpan span) {
-    Lower *l=context;
-    if (l->failed) return;
-    if (b==0 || b>l->block_count) { (void)fail_at(l,TF_CORE_LOWER_INVARIANT,NULL); return; }
-    l->blocks[b-1].block.terminator=(TfCoreTerminator){TF_CORE_UNREACHABLE,0,origin(l,span)};
+static TfCoreValueId match_expression(void *context, TfCoreBlockId b, TfNodeId id, const TfCoreMatchFact *facts) {
+    return under_match_facts(context,b,id,facts);
 }
+static void match_yield(void *l, TfCoreBlockId b, TfCoreValueId value, TfSpan span) { finish(l,b,value,span); }
+static void match_unreachable(void *context, TfCoreBlockId b, TfSpan span) { end_dead(context,b,span); }
 static bool match_bind(void *l, TfNodeId id, TfCoreValueId value) { return binding(l,node(id),value); }
 static bool match_tag(void *context, TfNodeId id, size_t *out) {
     Lower *l=context;
@@ -627,6 +661,7 @@ static TfCoreValueId matching(Lower *l, TfCoreBlockId b, const TfAstNode *n, TfC
     const TfCoreValueId scrutinee=expression(l,b,n->as.matching.value);
     if (l->failed) return 0;
     const TfCoreMatchBuilder builder={.context=l,.typed=l->typed,.types=l->types,.remaining_work=&l->match_work,
+        .inherited=l->match_facts,
         .allocate=match_allocate,.failed=match_failed,.invariant=match_invariant,.block=match_block,
         .emit=match_emit,.constant=match_constant,.expression=match_expression,.yield=match_yield,
         .unreachable=match_unreachable,.bind=match_bind,.variant_tag=match_tag};
@@ -672,8 +707,8 @@ static TfCoreValueId expression(Lower *l, TfCoreBlockId b, TfNodeId id) {
         const TfCoreValueId test=expression(l,b,n->as.conditional.condition);
         const TfAstNode *then=node(n->as.conditional.then_block), *otherwise=node(n->as.conditional.else_block);
         const TfCoreBlockId yes=new_block(l,then->span), no=new_block(l,otherwise->span);
-        TfCoreValueId branch=expression(l,yes,then->id); finish(l,yes,branch,then->span);
-        branch=expression(l,no,otherwise->id); finish(l,no,branch,otherwise->span);
+        bool_arm(l,yes,test,1,then->id,then->span);
+        bool_arm(l,no,test,0,otherwise->id,otherwise->span);
         v=if_op(l,b,type,test,yes,no,n->span);
         break;
     }

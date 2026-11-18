@@ -3,6 +3,15 @@
 
 #include "lower_types.h"
 
+typedef struct TfCoreMatchFact TfCoreMatchFact;
+struct TfCoreMatchFact {
+    const TfCoreMatchFact *prior;
+    TfCoreValueId subject;
+    size_t exact; /* SIZE_MAX when excluding a default's explicit cases */
+    const TfCoreTagCase *excluded;
+    size_t excluded_count;
+};
+
 /* Operations borrow a single lowering transaction. `allocate` owns all
  * returned scratch arrays until the transaction ends. `emit` may borrow its
  * counted arrays through the transaction. `bind` records the pattern's
@@ -13,13 +22,14 @@ typedef struct {
     const TfTypedProgram *typed;
     TfCoreLowerTypes *types;
     size_t *remaining_work; /* shared across this program, including nested matches */
+    const TfCoreMatchFact *inherited;
     void *(*allocate)(void *, size_t count, size_t width);
     bool (*failed)(const void *);
     TfCoreValueId (*invariant)(void *, const TfAstNode *);
     TfCoreBlockId (*block)(void *, TfSpan);
     TfCoreValueId (*emit)(void *, TfCoreBlockId, TfCoreTypeId, TfCoreOperation, TfSpan);
     TfCoreValueId (*constant)(void *, TfCoreBlockId, TfCoreConstant, TfSpan);
-    TfCoreValueId (*expression)(void *, TfCoreBlockId, TfNodeId);
+    TfCoreValueId (*expression)(void *, TfCoreBlockId, TfNodeId, const TfCoreMatchFact *);
     void (*yield)(void *, TfCoreBlockId, TfCoreValueId, TfSpan);
     void (*unreachable)(void *, TfCoreBlockId, TfSpan);
     bool (*bind)(void *, TfNodeId, TfCoreValueId);
