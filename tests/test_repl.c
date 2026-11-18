@@ -137,6 +137,19 @@ int main(void) {
         ":load tests/fixtures/repl/nominal-root.tfd\n"
         ":type fn(l: first::R, r: second::R) -> first::R { l }\n",
         "loaded\nfn(\"first.tfd\"::R, \"second.tfd\"::R) -> \"first.tfd\"::R\n",NULL,0);
+    /* The command belongs to the shell, even if its line would push an
+     * unfinished source unit over the maximum submitted size. */
+    enum { PREFIX_BYTES=65534 };
+    char *at_limit=malloc(PREFIX_BYTES+32u);
+    CHECK(at_limit!=NULL);
+    at_limit[0]='/'; at_limit[1]='*';
+    memset(at_limit+2,'x',PREFIX_BYTES-3);
+    at_limit[PREFIX_BYTES-1]='\n';
+    memcpy(at_limit+PREFIX_BYTES,":quit\n77\n",sizeof ":quit\n77\n");
+    exercise(at_limit,"",NULL,0);
+    memcpy(at_limit+PREFIX_BYTES,":cancel\n77\n",sizeof ":cancel\n77\n");
+    exercise(at_limit,"cancelled\n77\n",NULL,0);
+    free(at_limit);
     printf("Transactional REPL: %zu transcript assertions passed\n",assertions);
     return 0;
 }
