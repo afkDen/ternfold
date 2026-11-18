@@ -60,7 +60,7 @@ int main(void) {
     CHECK(strstr(output,"NOISE_WORD\tfrom\n")&&strstr(output,"NOISE_WORD\tto\n"));
     CHECK(strstr(output,"KEYWORD\tlet\n")&&strstr(output,"FLOAT_LITERAL\t1.25e1\n"));
     CHECK(strstr(output,"TEXT_LITERAL\t\"Hello\\\\nTernfold\"\n"));
-    golden(output,"tests/fixtures/lexer/Classroom Symbol Table.txt");golden(output,"Symbol Table.txt");
+    golden(output,"tests/fixtures/lexer/Classroom Symbol Table.txt");
     free(output);tf_lex_destroy(&r);tf_source_destroy(&s);
     CHECK(tf_source_load(&s,"examples/lexical/invalid.tfd",NULL)==TF_OK);
     CHECK(tf_lex(&r,&s,100,NULL)==TF_LEX_ERROR&&r.has_errors);

@@ -1,0 +1,184 @@
+{
+  "schema": 1,
+  "status": "Run cases compare the C17 reference interpreter and native execution. Lexical-only cases use tokens.",
+  "cases": [
+    {
+      "path": "examples/intro/hello.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "Hello, Ternfold.\n"
+    },
+    {
+      "path": "examples/intro/counter.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "4\n"
+    },
+    {
+      "path": "examples/features/snapshot_swap.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "9\n2\n"
+    },
+    {
+      "path": "examples/features/dependency_order.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "14\n"
+    },
+    {
+      "path": "examples/features/guard_short_circuit.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "first reason\n0\n"
+    },
+    {
+      "path": "examples/features/fold_and_closure.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "46\n"
+    },
+    {
+      "path": "examples/features/nested_patterns.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "on\nmissing\n"
+    },
+    {
+      "path": "examples/features/unicode.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "3\nNUL follows: \u0000end\n"
+    },
+    {
+      "path": "examples/boundaries/checked_division.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "-3\n-1\n1\n"
+    },
+    {
+      "path": "examples/boundaries/candidate_fault.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "",
+      "diagnostic": "R002"
+    },
+    {
+      "path": "examples/boundaries/minimum_overflow.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "",
+      "diagnostic": "R001"
+    },
+    {
+      "path": "examples/invalid/candidate_cycle.tfd",
+      "ready_after": "M07",
+      "mode": "check",
+      "diagnostic": "E404"
+    },
+    {
+      "path": "examples/invalid/missing_writer.tfd",
+      "ready_after": "M07",
+      "mode": "check",
+      "diagnostic": "E401"
+    },
+    {
+      "path": "examples/invalid/duplicate_writer.tfd",
+      "ready_after": "M07",
+      "mode": "check",
+      "diagnostic": "E402"
+    },
+    {
+      "path": "examples/invalid/non_bool_guard.tfd",
+      "ready_after": "M07",
+      "mode": "check",
+      "diagnostic": "E302"
+    },
+    {
+      "path": "examples/invalid/non_exhaustive.tfd",
+      "ready_after": "M06",
+      "mode": "check",
+      "diagnostic": "E310"
+    },
+    {
+      "path": "examples/invalid/closure_candidate.tfd",
+      "ready_after": "M07",
+      "mode": "check",
+      "diagnostic": "E406"
+    },
+    {
+      "path": "examples/showcase/models/shelf.tfd",
+      "ready_after": "M09",
+      "mode": "check"
+    },
+    {
+      "path": "examples/showcase/branching_inventory.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "Ternfold: inspect a change before accepting it\naccepted count=7\nfree=3\nrejected capacity; count=7\noriginal still=3\naccepted count=4\nfree=6\n"
+    },
+    {
+      "path": "examples/course/automata.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "Ternfold\n-3\n",
+      "language_revision": 2
+    },
+    {
+      "path": "examples/course/main_io.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdin": "Ada\n",
+      "stdout": "Hello Ada\n26\n-3\n",
+      "language_revision": 2
+    },
+    {
+      "path": "examples/course/operator_inventory.tfd",
+      "ready_after": "M09",
+      "mode": "run",
+      "stdout": "3.5e0\n3\n1\n8\ntrue\n",
+      "language_revision": 2
+    },
+    {
+      "path": "examples/showcase/checkout.tfd",
+      "ready_after": "M12",
+      "mode": "run",
+      "stdout": "Checkout: reserve stock, then charge wallet\noriginal stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0\nboth accept\nstock reserved=2 from=0 available=4\nwallet charged=10 from=0 balance=20\nafter stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0\nsecond rejects: Wallet.Insufficient(25,20)\nretained stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0\nfirst rejects: Stock.Insufficient(5,4)\nretained stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0\nzero rejects: Stock.InvalidQuantity(0)\nretained stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0\nfold: accept, wallet reject, exact exhaustion\nstock reserved=2 from=0 available=4\nwallet charged=10 from=0 balance=20\nrejected Wallet.Insufficient(25,20)\nstock reserved=6 from=2 available=0\nwallet charged=20 from=10 balance=0\nfolded stock=0 reserved=6 prior_reserved=2 wallet=0 spent=30 prior_spent=10\nindependent branch from original\nstock reserved=1 from=0 available=5\nwallet charged=3 from=0 balance=27\nbranch stock=5 reserved=1 prior_reserved=0 wallet=27 spent=3 prior_spent=0\noriginal still stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0\n"
+    },
+    {
+      "path": "examples/showcase/checkout_models.tfd",
+      "ready_after": "M12",
+      "mode": "check"
+    },
+    {
+      "path": "examples/course/teaching.tfd",
+      "ready_after": "M12",
+      "mode": "run",
+      "stdin": "Ada\n",
+      "stdout": "Hello Ada\n2.6000000000000001e0\n-3\n9\n26\n",
+      "language_revision": 2
+    },
+    {
+      "path": "examples/course/precedence_bindings.tfd",
+      "ready_after": "M12",
+      "mode": "run",
+      "stdout": "-4\n4\n512\n7\n20\n2.0e0\ntrue\ntrue\n19\n5\nold=10\nproposed=13\n26\n10\n"
+    },
+    {
+      "path": "examples/lexical/complete.tfd",
+      "ready_after": "M03",
+      "mode": "tokens"
+    },
+    {
+      "path": "examples/lexical/invalid.tfd",
+      "ready_after": "M03",
+      "mode": "tokens",
+      "diagnostic": "E101"
+    },
+    {
+      "path": "examples/lexical/vocabulary.tfd",
+      "ready_after": "M03",
+      "mode": "tokens"
+    }
+  ]
+}
