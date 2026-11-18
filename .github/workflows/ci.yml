@@ -15,6 +15,18 @@ env:
   UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
 jobs:
+  history:
+    name: Development history audit
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify provenance and distribution boundaries
+        run: ./scripts/verify-history.ps1
+
   windows:
     name: Windows x64 (${{ matrix.mode }})
     runs-on: windows-2025
@@ -45,7 +57,7 @@ jobs:
   release:
     name: Verify and publish release assets
     if: github.ref_type == 'tag'
-    needs: windows
+    needs: [windows, history]
     runs-on: windows-2025
     timeout-minutes: 35
     permissions:
