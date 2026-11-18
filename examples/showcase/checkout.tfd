@@ -15,8 +15,9 @@ pub fn main() -> List[Text] {
     let after = shop::snapshot(accepted);
     // Stock accepts one more; wallet rejects 25 against the remaining 20.
     let second_reject = shop::purchase(after, shop::Order(quantity: 1, unit_price: 25));
-    // Stock rejects before the wallet proposal is evaluated.
-    let first_reject = shop::purchase(after, shop::Order(quantity: 5, unit_price: 1));
+    // Stock rejects before evaluating a charge that would overflow.
+    let first_reject = shop::purchase(after,
+        shop::Order(quantity: 5, unit_price: 9223372036854775807));
     let zero = shop::purchase(original, shop::Order(quantity: 0, unit_price: 5));
     let events = [shop::Order(quantity: 2, unit_price: 5),
         shop::Order(quantity: 1, unit_price: 25), shop::Order(quantity: 4, unit_price: 5)];

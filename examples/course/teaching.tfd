@@ -1,0 +1,15 @@
+fn square(x: Int) -> Int { x ^ 2 }
+fn polynomial(x: Int) -> Int { 2 * (x ^ 2) + 3 * x - 1 }
+fn table() -> List[List[Int]] {
+    for row in range(0, 2) {
+        for col in range(0, 3) { row * 10 + col }
+    }
+}
+pub fn main() -> List[Text] {
+    input visitor: Text from stdin;
+    let a = 13 / 5;
+    let b = -7 div 3;
+    let mark: Char = 'T';
+    output "Hello " ++ visitor to stdout;
+    [float_text(a), int_text(b), int_text(square(3))]
+}

@@ -410,6 +410,7 @@ static void test_examples(const char *exe) {
     static const char *const examples[] = {
         "boundaries/candidate_fault.tfd","boundaries/checked_division.tfd","boundaries/minimum_overflow.tfd",
         "course/automata.tfd","course/main_io.tfd","course/operator_inventory.tfd","course/precedence_bindings.tfd",
+        "course/teaching.tfd",
         "features/dependency_order.tfd","features/fold_and_closure.tfd","features/guard_short_circuit.tfd",
         "features/nested_patterns.tfd","features/snapshot_swap.tfd","features/unicode.tfd",
         "intro/counter.tfd","intro/hello.tfd","invalid/candidate_cycle.tfd","invalid/closure_candidate.tfd",

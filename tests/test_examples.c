@@ -289,12 +289,24 @@ static void load_manifest(void) {
         e->mode=string_field(j,i,"mode",true); cstring(e->mode);
         CHECK(text_is(e->mode,"run") || text_is(e->mode,"check") || text_is(e->mode,"tokens"));
         Bytes ready=string_field(j,i,"ready_after",true); cstring(ready);
-        /* Readiness is documentation, never a reason to skip execution. */
-        CHECK(ready.length<32); free(ready.data);
+        /* Validate the canonical ID family; readiness never skips execution. */
+        const bool milestone=ready.length==3 && ready.data[0]=='M' &&
+            jdigit(ready.data[1]) && jdigit(ready.data[2]) &&
+            (ready.data[1]=='0' || (ready.data[1]=='1' && ready.data[2]<='7'));
+        CHECK(milestone || text_is(ready,"C00") || text_is(ready,"C01") ||
+              text_is(ready,"S01") || text_is(ready,"X01") || text_is(ready,"C-MIGRATION-01"));
+        free(ready.data);
         e->stdout_bytes=string_field(j,i,"stdout",text_is(e->mode,"run"));
         e->stdin_bytes=string_field(j,i,"stdin",false);
         e->diagnostic=string_field(j,i,"diagnostic",false);
         e->has_stdout=e->stdout_bytes.data!=NULL; e->has_stdin=e->stdin_bytes.data!=NULL;
+        if (text_is(e->path,"examples/showcase/checkout.tfd")) {
+            const Bytes transcript=read_bytes("examples/showcase/checkout.expected.txt");
+            CHECK(text_is(e->mode,"run") && e->has_stdout &&
+                  transcript.length==e->stdout_bytes.length &&
+                  memcmp(transcript.data,e->stdout_bytes.data,transcript.length)==0);
+            free(transcript.data);
+        }
         if (e->diagnostic.data) {
             cstring(e->diagnostic);
             CHECK(e->diagnostic.length==4);
