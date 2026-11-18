@@ -1,0 +1,70 @@
+name: Compiler CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+  UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+jobs:
+  windows:
+    name: Windows x64 (${{ matrix.mode }})
+    runs-on: windows-2025
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [check, sanitize]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify the source tree
+        run: ./scripts/verify-distribution.ps1
+      - name: Install the pinned toolchain
+        run: |
+          $cc = ./scripts/windows-toolchain.ps1
+          "TF_CI_CC=$cc" >> $env:GITHUB_ENV
+      - name: Build and test
+        env:
+          TF_CI_MODE: ${{ matrix.mode }}
+        run: |
+          & pwsh -NoProfile -File scripts/build.ps1 $env:TF_CI_MODE -Compiler $env:TF_CI_CC
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./benchmarks/three-way.ps1 $env:TF_CI_MODE -Compiler $env:TF_CI_CC
+          ./experiments/composition/run.ps1 -Compiler $env:TF_CI_CC -Sanitize:($env:TF_CI_MODE -eq 'sanitize')
+
+  release:
+    name: Verify and publish release assets
+    if: github.ref_type == 'tag'
+    needs: windows
+    runs-on: windows-2025
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and verify the tagged distributions
+        run: |
+          $cc = ./scripts/windows-toolchain.ps1
+          ./scripts/release.ps1 -Tag $env:GITHUB_REF_NAME -Compiler $cc
+      - name: Publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
+          $assets = @(Get-ChildItem -LiteralPath "dist/$tag" -File | ForEach-Object FullName)
+          if ($assets.Count -ne 3) { throw 'Expected two bundles and a checksum file' }
+          gh release create $tag @assets --verify-tag --title "Ternfold $($tag.Substring(1))" --notes-file "docs/releases/$tag.md"
+          exit $LASTEXITCODE
