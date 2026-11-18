@@ -148,6 +148,16 @@ static void join(char *path, const char *directory, const char *leaf) {
     const int n=snprintf(path,PATH_CAP,"%s/%s",directory,leaf);
     CHECK(n>0 && (size_t)n<PATH_CAP);
 }
+static void origin_path(const char *relative, char path[static PATH_CAP]) {
+#ifdef _WIN32
+    const DWORD n=GetFullPathNameA(relative,PATH_CAP,path,NULL);
+    CHECK(n>0 && n<PATH_CAP);
+#else
+    char cwd[PATH_CAP];
+    CHECK(getcwd(cwd,sizeof cwd)!=NULL);
+    join(path,cwd,relative);
+#endif
+}
 static void setup(void) {
 #ifdef _WIN32
     const unsigned long pid=(unsigned long)GetCurrentProcessId();
@@ -654,9 +664,19 @@ static void stage_boundaries(const char *compiler,const char *sentinel,const cha
     };
     static const char *const later[]={"check","plan","core","run","emit-c","build"};
     static const char old[]="existing output\0must survive";
-    char source[PATH_CAP], emitted[PATH_CAP];
+    char source[PATH_CAP], emitted[PATH_CAP], relative[PATH_CAP], witness[PATH_CAP];
     join(source,work,"boundary.tfd");
     join(emitted,work,"should-not-publish.c");
+    join(relative,work,"downstream-compiler-invoked");
+    origin_path(relative,witness);
+    current="negative stage compiler sentinel positive control";
+#ifdef _WIN32
+    CHECK(SetEnvironmentVariableA("TF_TEST_CC_WITNESS",witness)!=0);
+#else
+    CHECK(setenv("TF_TEST_CC_WITNESS",witness,1)==0);
+#endif
+    const char *control[]={sentinel,"-std=c17","sentinel control",NULL};
+    run(control,43); expect(witness,"called",6); CHECK(remove(witness)==0);
     for (size_t i=0;i<sizeof rows/sizeof *rows;++i) {
         const bool cycle=rows[i].input==NULL;
         current=rows[i].code;
@@ -679,14 +699,21 @@ static void stage_boundaries(const char *compiler,const char *sentinel,const cha
                                 builds ? "--cc" : NULL,sentinel,"--runtime-root",root,NULL};
             run(args,1); expect(out,"",0);
             require_diagnostic(rows[i].code,rows[i].spelling,rows[i].start);
+            absent(witness);
             if (target) {
                 absent(target); write_bytes(target,old,sizeof old-1);
                 run(args,1); expect(out,"",0); expect(target,old,sizeof old-1);
                 require_diagnostic(rows[i].code,rows[i].spelling,rows[i].start);
+                absent(witness);
                 CHECK(remove(target)==0);
             }
         }
     }
+#ifdef _WIN32
+    CHECK(SetEnvironmentVariableA("TF_TEST_CC_WITNESS",NULL)!=0);
+#else
+    CHECK(unsetenv("TF_TEST_CC_WITNESS")==0);
+#endif
     CHECK(remove(source)==0);
     printf("stage boundaries: 5 exact diagnostic sets, 40 blocked later commands\n");
 }
@@ -744,6 +771,9 @@ static void reproducible_pipeline(const char *compiler,const char *cc,
 
 /* A real downstream failure after writing into the compiler's private stage. */
 static int fake_cc(int argc, char **argv) {
+    const char *witness=getenv("TF_TEST_CC_WITNESS");
+    current="sentinel C compiler";
+    if (witness) write_bytes(witness,"called",6);
     for (int i=2;i+1<argc;++i) {
         if (strcmp(argv[i],"-o")==0) {
             FILE *f=fopen(argv[i+1],"wb");

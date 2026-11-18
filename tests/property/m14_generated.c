@@ -192,17 +192,6 @@ static bool bytes_equal(Bytes bytes, const char *expected) {
     return bytes.length==n && memcmp(bytes.data,expected,n)==0;
 }
 
-static void origin_path(const char *relative, char path[static PATH_CAP]) {
-#ifdef _WIN32
-    const DWORD n=GetFullPathNameA(relative,PATH_CAP,path,NULL);
-    CHECK(n>0 && n<PATH_CAP);
-#else
-    char cwd[PATH_CAP];
-    CHECK(getcwd(cwd,sizeof cwd)!=NULL);
-    join(path,cwd,relative);
-#endif
-}
-
 /* Generated source is ASCII (no tabs): byte-derived scalar columns and
  * display columns coincide. The compiler renders paths differently in JSON
  * and in the native launcher; neither expected report is copied from a peer. */
