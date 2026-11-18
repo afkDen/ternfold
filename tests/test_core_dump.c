@@ -181,7 +181,7 @@ static TfCoreProgram *example(TfSource *root, TfSource *other) {
     };
     TfCoreProgram *program = freeze(&(TfCoreProgramData){
         types, COUNT(types), constants, COUNT(constants), functions, COUNT(functions),
-        spans, COUNT(spans), 3
+        spans, COUNT(spans), 3, NULL, 0, NULL, 0
     });
     memset(text, '!', sizeof(text));
     return program;

@@ -134,7 +134,7 @@ static TfStatus fixture(TfCoreProgram **out, const TfSource *source,
          1, 0, T_INT, inspect_blocks, COUNT(inspect_blocks), 1, 9}
     };
     TfCoreProgramData input = {types, COUNT(types), constants, COUNT(constants),
-                               functions, COUNT(functions), spans, COUNT(spans), F_ENTRY};
+                               functions, COUNT(functions), spans, COUNT(spans), F_ENTRY, NULL, 0, NULL, 0};
     TfStatus status;
     memset(long_text, 'x', sizeof(long_text));
     long_text[sizeof(long_text) - 1] = 'z';
@@ -346,7 +346,7 @@ static void malformed_constructible(void) {
     TfCoreFunction function = {.kind = TF_CORE_FUNCTION_ENTRY_ONLY, .body = 1,
                                .value_count = SIZE_MAX, .blocks = &block, .block_count = 1};
     TfCoreProgramData input = {types, COUNT(types), constants, COUNT(constants),
-                               &function, 1, NULL, 0, 99};
+                               &function, 1, NULL, 0, 99, NULL, 0, NULL, 0};
     TfCoreProgram *program = NULL;
     const TfCoreProgramData *data;
     const TfCoreBlock *frozen;

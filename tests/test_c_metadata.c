@@ -301,7 +301,7 @@ static void library_fixture(const char *filename) {
          .value_count = 1}
     };
     fixture(&(TfCoreProgramData){types, COUNT(types), constants, COUNT(constants),
-            functions, COUNT(functions), spans, COUNT(spans), 0}, filename, true);
+            functions, COUNT(functions), spans, COUNT(spans), 0, NULL, 0, NULL, 0}, filename, true);
     tf_source_destroy(&unnamed);
     tf_source_destroy(&source);
 }

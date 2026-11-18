@@ -501,6 +501,7 @@ static void native_fault(const char *expected) {
     CHECK(fclose(f)==0);
 }
 
+static void traced_case(const char *compiler,const Case *test,const char *module_root);
 static void differential(const char *compiler, const char *cc, const char *root, bool sanitize) {
     char previous[PATH_CAP]="";
     for (size_t i=0;i<sizeof cases/sizeof *cases;++i) {
@@ -543,10 +544,37 @@ static void differential(const char *compiler, const char *cc, const char *root,
         if (test->bad_input) contains(err,"input snapshot is not valid UTF-8");
         else if (test->code!=NULL) native_fault(fault);
         else expect(err,"",0);
+        if (!test->bad_input) traced_case(compiler,test,module_root);
         free(fault);
         if (test->staged_library) CHECK(remove(staged)==0);
     }
     remove_native();
+}
+
+static void traced_case(const char *compiler,const Case *test,const char *module_root) {
+    char reference[PATH_CAP],compiled[PATH_CAP],ref_map[PATH_CAP],native_map[PATH_CAP];
+    join(reference,work,"reference.trace"); join(compiled,work,"native.trace");
+    join(ref_map,work,"reference.trace.origins"); join(native_map,work,"native.trace.origins");
+    const bool with_input=test->stdin_bytes!=NULL;
+    const int status=test->code ? 3 : 0;
+    const char *ref[]={compiler,"run",test->source,"--root",module_root,"--diagnostics-json",
+                       "--trace",reference,with_input ? "--stdin-file" : NULL,with_input ? input : NULL,NULL};
+    run(ref,status); expect(out,test->output,test->output_size);
+    char *fault=malloc(BYTE_CAP); CHECK(fault);
+    if (test->code) fault_report(test,fault); else expect(err,LF_OK,sizeof LF_OK-1);
+    const Bytes trace=read_bytes(reference),map=read_bytes(ref_map);
+    const char *args[]={native,"--trace",compiled,with_input ? "--stdin-file" : NULL,with_input ? input : NULL,NULL};
+    run(args,status); expect(out,test->output,test->output_size);
+    if (test->code) native_fault(fault); else expect(err,"",0);
+    /* The engines have independent resource budgets and call limits.
+     * Their R003 outcomes/spans are tested above; event counts are not equal
+     * when either reaches its implementation-specific limit. */
+    if (!test->code || strcmp(test->code,"R003")!=0) expect(compiled,trace.data,trace.length);
+    expect(native_map,map.data,map.length);
+    free(fault); free(trace.data); free(map.data);
+    const char *replay[]={compiler,"replay",reference,NULL};
+    run(replay,0); contains(out,"Trace:"); contains(out,"Companion source map"); expect(err,"",0);
+    CHECK(remove(reference)==0 && remove(compiled)==0 && remove(ref_map)==0 && remove(native_map)==0);
 }
 
 static void absent(const char *path) {
