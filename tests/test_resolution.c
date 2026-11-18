@@ -393,7 +393,7 @@ static void paths(void) {
     opts = (TfResolveOptions){base, 100};
 #ifndef _WIN32
     /* A backslash is part of a POSIX filename, never a containment separator. */
-    r = resolve(sm, put(&f, "root\outside.tfd", ""), &opts);
+    r = resolve(sm, put(&f, "root\\outside.tfd", ""), &opts);
     phase(r, false, 1, 0);
     (void)diagnostic(r, 0, "E204", 0);
     CHECK(tf_resolution_module_count(r) == 0 && tf_source_manager_count(sm) == 0);
