@@ -1,0 +1,12 @@
+machine Late(value: Int) yields Text rejects Text {
+    state count: Int = 0;
+    next count = value;
+    guard true else "first";
+    guard 1 div 0 == 0 else "second";
+    emit "never published";
+}
+pub fn main() -> List[Text] {
+    output "staged";
+    let _ = step(Late(), 1);
+    ["unreachable"]
+}

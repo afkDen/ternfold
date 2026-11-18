@@ -315,12 +315,12 @@ static void test_errors_caps(const char *exe) {
 }
 static void test_usage_host(const char *exe) {
     char path[PATH_CAPACITY], bad_path[PATH_CAPACITY], missing[PATH_CAPACITY], table[PATH_CAPACITY];
-    const char *commands[] = {"run","compile","unknown"}; size_t i;
+    const char *commands[] = {"compile","unknown"}; size_t i;
     join_path(path,root,"valid.tfd"); write_text(path,"let a = 1;");
     join_path(missing,root,"missing");
     for (i = 0; i < sizeof(commands)/sizeof(commands[0]); ++i) {
         const char *args[] = {exe,commands[i],path,NULL}; CHECK(spawn(args,CAPTURE,CAPTURE) == 2);
-        contains(error_path,"unavailable"); equal(output_path,"");
+        contains(error_path,"use --help"); equal(output_path,"");
     }
     {
         const char *none[] = {exe,NULL}; const char *help[] = {exe,"--help",NULL};
@@ -528,6 +528,69 @@ static void test_core_cli(const char *exe) {
     CHECK(spawn(args,CAPTURE,CAPTURE)==0);
     contains(output_path,"ordinary name=\"main\""); contains(output_path," = Call f");
 }
+static void output_bytes(const char *expected, size_t length) {
+    FILE *out=fopen(output_path,"rb");
+    CHECK(out!=NULL);
+    for (size_t i=0; i<length; ++i) CHECK(fgetc(out)==(unsigned char)expected[i]);
+    CHECK(fgetc(out)==EOF && feof(out) && fclose(out)==0);
+}
+
+static void test_run_cli(const char *exe) {
+    static const struct { const char *path,*output; size_t bytes; const char *fault; } examples[]={
+#define RUN(path, text) {"examples/" path,text,sizeof(text)-1,NULL}
+        RUN("intro/hello.tfd","Hello, Ternfold.\n"), RUN("intro/counter.tfd","4\n"),
+        RUN("features/snapshot_swap.tfd","9\n2\n"), RUN("features/dependency_order.tfd","14\n"),
+        RUN("features/guard_short_circuit.tfd","first reason\n0\n"), RUN("features/fold_and_closure.tfd","46\n"),
+        RUN("features/nested_patterns.tfd","on\nmissing\n"), RUN("features/unicode.tfd","3\nNUL follows: \0end\n"),
+        RUN("boundaries/checked_division.tfd","-3\n-1\n1\n"),
+        RUN("course/automata.tfd","Ternfold\n-3\n"), RUN("course/operator_inventory.tfd","3.5e0\n3\n1\n8\ntrue\n"),
+        RUN("showcase/branching_inventory.tfd","Ternfold: inspect a change before accepting it\naccepted count=7\n"
+            "free=3\nrejected capacity; count=7\noriginal still=3\naccepted count=4\nfree=6\n"),
+        {"examples/boundaries/candidate_fault.tfd","",0,"R002"},
+        {"examples/boundaries/minimum_overflow.tfd","",0,"R001"}
+#undef RUN
+    };
+    for (size_t i=0; i<sizeof examples/sizeof *examples; ++i) {
+        const char *args[]={exe,"run",examples[i].path,"--root","examples","--diagnostics-json",NULL};
+        const int status=spawn(args,CAPTURE,CAPTURE);
+        if (status!=(examples[i].fault==NULL ? 0 : 3)) {
+            char *error=read_text(error_path);
+            fprintf(stderr,"run example %s: %s\n",examples[i].path,error); free(error);
+        }
+        CHECK(status==(examples[i].fault==NULL ? 0 : 3));
+        output_bytes(examples[i].output,examples[i].bytes);
+        contains(error_path,examples[i].fault==NULL ? "\"diagnostics\":[]" : examples[i].fault);
+    }
+    char input[PATH_CAPACITY]; join_path(input,root,"captured input.txt");
+    write_text(input,"Ada\r\nextra\n");
+    const char *course[]={exe,"run","examples/course/main_io.tfd","--stdin-file",input,"--diagnostics-json",NULL};
+    CHECK(spawn(course,CAPTURE,CAPTURE)==0); equal(output_path,"Hello Ada\n26\n-3\n");
+    CHECK(spawn(course,BROKEN_PIPE,CAPTURE)==2);
+
+    const char *fault[]={exe,"run","tests/fixtures/types/interpreter-fault.tfd","--stdin-file",input,"--diagnostics-json",NULL};
+    write_text(input,"first only\n");
+    CHECK(spawn(fault,CAPTURE,CAPTURE)==3); output_bytes("",0); contains(error_path,"\"code\":\"R006\"");
+    CHECK(spawn(fault,CAPTURE,BROKEN_PIPE)==2);
+    write_text(input,"first\nsecond");
+    CHECK(spawn(fault,CAPTURE,CAPTURE)==3); output_bytes("",0); contains(error_path,"\"code\":\"R002\"");
+    write_bytes(input,"\xc0\x80",2);
+    CHECK(spawn(fault,CAPTURE,CAPTURE)==2); output_bytes("",0); contains(error_path,"not valid UTF-8");
+
+    const char *library[]={exe,"run","examples/showcase/models/shelf.tfd","--diagnostics-json",NULL};
+    CHECK(spawn(library,CAPTURE,CAPTURE)==1); output_bytes("",0); contains(error_path,"\"code\":\"E208\"");
+    const char *origin[]={exe,"run","tests/fixtures/types/core-wrapper-root.tfd","--diagnostics-json",NULL};
+    CHECK(spawn(origin,CAPTURE,CAPTURE)==3); output_bytes("",0);
+    contains(error_path,"\"code\":\"R003\""); contains(error_path,"core-wrapper-root.tfd");
+    char *json=read_text(error_path); CHECK(strstr(json,"core-wrapper-library.tfd")==NULL); free(json);
+    const char *fixtures[]={"interpreter-late-guard.tfd","interpreter-late-emission.tfd",
+                             "interpreter-candidate-order.tfd","interpreter-negative-power.tfd"};
+    const char *codes[]={"R002","R002","R001","R005"};
+    for (size_t i=0; i<sizeof fixtures/sizeof *fixtures; ++i) {
+        char path[PATH_CAPACITY]; join_path(path,"tests/fixtures/types",fixtures[i]);
+        const char *args[]={exe,"run",path,"--diagnostics-json",NULL};
+        CHECK(spawn(args,CAPTURE,CAPTURE)==3); output_bytes("",0); contains(error_path,codes[i]);
+    }
+}
 static void test_ast_cli(const char *exe) {
     char path[PATH_CAPACITY], table[PATH_CAPACITY];
     const char *args[] = {exe,"ast",path,"--json","--diagnostics-json",NULL};
@@ -610,7 +673,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 2); setup();
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
     test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
-    test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]); test_core_cli(argv[1]);
+    test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]); test_core_cli(argv[1]); test_run_cli(argv[1]);
     (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
     return 0;
 }

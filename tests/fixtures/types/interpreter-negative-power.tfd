@@ -1,0 +1,1 @@
+pub fn main() -> List[Text] { output "staged"; [int_text(2 ^ -1)] }

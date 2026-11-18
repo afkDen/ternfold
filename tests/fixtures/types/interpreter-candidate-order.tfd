@@ -1,0 +1,8 @@
+machine Ordered(value: Unit) yields Unit rejects Unit {
+    state z: Int = 0;
+    state a: Int = 0;
+    next z = 1 div 0;
+    next a = 9223372036854775807 + 1;
+    guard false else ();
+}
+pub fn main() -> List[Text] { let _ = step(Ordered(), ()); [] }

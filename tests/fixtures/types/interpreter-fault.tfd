@@ -1,0 +1,7 @@
+pub fn main() -> List[Text] {
+    input first: Text;
+    output first;
+    input second: Text;
+    let _: Int = 1 div 0;
+    [second]
+}
