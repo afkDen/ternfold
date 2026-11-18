@@ -1,0 +1,9 @@
+machine Inner(command: fn(Int) -> Int) yields fn(Int) -> Int rejects Unit {
+    state value: Int = 0;
+    next value = value;
+    emit command;
+}
+machine Outer(command: Unit) yields Unit rejects Unit {
+    state value: Inner = Inner();
+    next value = value;
+}
