@@ -10,5 +10,8 @@ int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *fronte
                     const char *input_path, TfDiagnosticFormat format, const char **failure);
 int tf_driver_missing_entry(const TfDiagnosticBag *frontend, TfDiagnosticFormat format,
                             const char *message, const char **failure);
+bool tf_driver_report_runtime_fault(FILE *stream,const TfCoreProgramData *data,
+                                    const TfDiagnosticBag *frontend,TfDiagnosticFormat format,
+                                    TfRuntimeFault fault);
 
 #endif

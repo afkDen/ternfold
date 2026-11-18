@@ -1,4 +1,5 @@
 #include "builtins.h"
+#include "repl_value.h"
 #include "../internal.h"
 
 #include <string.h>
@@ -321,6 +322,19 @@ static bool result_copy(Vm *vm, TfInterpreterResult **out) {
     return true;
 }
 
+static TfStatus run(Vm *vm, TfCoreFunctionId function, const TfExecValue *input) {
+    if (!tf_exec_constants(&vm->arena,vm->data,&vm->constants) ||
+        !call(vm,function,(TfExecValues){0},input,NULL,0,HOST_DESTINATION,0))
+        return fault(vm,TF_RUNTIME_RESOURCE,tf_core_function(vm->data,function)->span);
+    return evaluate(vm);
+}
+
+static void destroy(Vm *vm) {
+    if (vm->frames!=NULL) vm->arena.allocator.deallocate(vm->arena.allocator.context,vm->frames);
+    if (vm->slots!=NULL) vm->arena.allocator.deallocate(vm->arena.allocator.context,vm->slots);
+    tf_exec_arena_destroy(&vm->arena);
+}
+
 TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *program,
                            const TfCoreText *lines, size_t line_count,
                            const TfInterpreterLimits *limits, const TfAllocator *allocator,
@@ -347,16 +361,30 @@ TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *pro
         }
         input=(TfExecValue){.type=list,.as.aggregate={0,{values,line_count}}};
     }
-    if (!tf_exec_constants(&vm.arena,vm.data,&vm.constants) ||
-        !call(&vm,vm.data->entry,(TfExecValues){0},&input,NULL,0,HOST_DESTINATION,0)) {
-        status=fault(&vm,TF_RUNTIME_RESOURCE,entry->span); goto done;
-    }
-    status=evaluate(&vm);
+    status=run(&vm,vm.data->entry,&input);
     if (status==TF_OK && !result_copy(&vm,out)) status=fault(&vm,TF_RUNTIME_RESOURCE,entry->span);
 done:
-    if (vm.frames!=NULL) vm.arena.allocator.deallocate(vm.arena.allocator.context,vm.frames);
-    if (vm.slots!=NULL) vm.arena.allocator.deallocate(vm.arena.allocator.context,vm.slots);
-    tf_exec_arena_destroy(&vm.arena);
+    destroy(&vm);
+    return status;
+}
+
+TfStatus tf_interpret_repl(TfReplValue *out, const TfVerifiedCore *program,
+                           TfCoreFunctionId function, const TfInterpreterLimits *limits,
+                           const TfAllocator *allocator, TfRuntimeFault *reported) {
+    if (reported!=NULL) *reported=(TfRuntimeFault){0};
+    if (out==NULL) return TF_HOST_ERROR;
+    out->length=0;
+    out->bytes[0]='\0';
+    const TfInterpreterLimits cap=limits!=NULL ? *limits : tf_interpreter_default_limits();
+    Vm vm={.arena={.allocator=tf_allocator(allocator),.remaining=cap.max_bytes},
+        .data=tf_verified_core_data(program),.call_limit=cap.max_call_depth,.steps=cap.max_steps,.fault=reported};
+    const TfCoreFunction *target=tf_core_function(vm.data,function);
+    if (target==NULL || function==vm.data->entry || target->kind!=TF_CORE_FUNCTION_ORDINARY ||
+        target->parameter_count!=0 || target->capture_count!=0 ||
+        !tf_allocator_valid(vm.arena.allocator)) return TF_HOST_ERROR;
+    const TfStatus status=run(&vm,function,NULL);
+    if (status==TF_OK) tf_repl_value_render(out,vm.data,&vm.result);
+    destroy(&vm);
     return status;
 }
 

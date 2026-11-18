@@ -7,7 +7,7 @@
 #include <io.h>
 #endif
 
-static bool report(const TfDiagnosticBag *front, TfDiagnosticFormat format, const char *code,
+static bool report(FILE *stream,const TfDiagnosticBag *front, TfDiagnosticFormat format, const char *code,
                    const char *message, const TfDiagnosticLabel *labels, size_t count) {
     TfDiagnosticBag *bag=NULL;
     bool ok=false;
@@ -18,7 +18,7 @@ static bool report(const TfDiagnosticBag *front, TfDiagnosticFormat format, cons
     if (tf_diagnostic_bag_add(bag,&record)!=TF_OK) goto done;
     for (size_t i=0; i<tf_diagnostic_bag_count(front); ++i)
         if (tf_diagnostic_bag_add(bag,tf_diagnostic_bag_get(front,i))!=TF_OK) goto done;
-    ok=tf_diagnostic_bag_write(stderr,bag,format,TF_DIAG_COLOR_NEVER)==TF_OK && fflush(stderr)==0;
+    ok=tf_diagnostic_bag_write(stream,bag,format,TF_DIAG_COLOR_NEVER)==TF_OK && fflush(stream)==0;
 done:
     tf_diagnostic_bag_destroy(bag);
     return ok;
@@ -26,12 +26,12 @@ done:
 
 int tf_driver_missing_entry(const TfDiagnosticBag *frontend, TfDiagnosticFormat format,
                             const char *message, const char **failure) {
-    if (!report(frontend,format,"E208",message,NULL,0)) *failure="cannot write entry diagnostic";
+    if (!report(stderr,frontend,format,"E208",message,NULL,0)) *failure="cannot write entry diagnostic";
     return 1;
 }
 
-static bool report_fault(const TfCoreProgramData *data, const TfDiagnosticBag *front,
-                         TfDiagnosticFormat format, TfRuntimeFault fault) {
+bool tf_driver_report_runtime_fault(FILE *stream,const TfCoreProgramData *data,const TfDiagnosticBag *front,
+                                    TfDiagnosticFormat format,TfRuntimeFault fault) {
     static const struct { const char *code,*message; } messages[]={
         {"R004","unexpected interpreter state"}, {"R001","arithmetic overflow or nonfinite result"},
         {"R002","division or remainder by zero"}, {"R003","execution resource limit exceeded"},
@@ -50,7 +50,7 @@ static bool report_fault(const TfCoreProgramData *data, const TfDiagnosticBag *f
         labels[used]=(TfDiagnosticLabel){*call,used==0,{"called here",sizeof "called here"-1}};
         ++used;
     }
-    return report(front,format,messages[index].code,messages[index].message,labels,used);
+    return report(stream,front,format,messages[index].code,messages[index].message,labels,used);
 }
 
 int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
@@ -86,7 +86,7 @@ int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
     const TfStatus status=tf_interpret_entry(&result,program,input.lines,input.count,NULL,NULL,&fault);
     tf_input_snapshot_destroy(&input);
     if (status==TF_SOURCE_ERROR) {
-        if (!report_fault(data,front,format,fault)) *failure="cannot write runtime diagnostic";
+        if (!tf_driver_report_runtime_fault(stderr,data,front,format,fault)) *failure="cannot write runtime diagnostic";
         return 3;
     }
     if (status!=TF_OK) { *failure="cannot execute verified Core on this host"; return 2; }

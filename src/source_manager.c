@@ -293,26 +293,54 @@ TfStatus tf_source_manager_create(TfSourceManager **out, const TfAllocator *allo
     *out = manager;
     return TF_OK;
 }
-void tf_source_manager_destroy(TfSourceManager *manager) {
-    size_t i;
+TfSourceManagerMark tf_source_manager_mark(const TfSourceManager *manager) {
+    return manager == NULL ? (TfSourceManagerMark){0} :
+        (TfSourceManagerMark){manager, manager->count, manager->alias_count};
+}
+
+bool tf_source_manager_rollback(TfSourceManager *manager, TfSourceManagerMark mark) {
     TfAllocator a;
-    if (manager == NULL) return;
+    if (manager == NULL || mark.manager != manager ||
+        mark.sources > manager->count || mark.aliases > manager->alias_count) return false;
     a = manager->allocator;
-    for (i = 0; i < manager->count; ++i) {
-        TfManagedSource *entry = manager->entries[i];
+    while (manager->alias_count > mark.aliases) {
+        Alias *alias = &manager->aliases[--manager->alias_count];
+        release(a, alias->path);
+        release(a, alias->native_key);
+        *alias = (Alias){0};
+    }
+    while (manager->count > mark.sources) {
+        TfManagedSource *entry = manager->entries[--manager->count];
+        manager->entries[manager->count] = NULL;
         /* These pointers were allocated mutable here; const is for borrowers. */
         tf_source_destroy((TfSource *)entry->source);
         release(a, (void *)entry->source);
         release(a, (void *)entry->canonical_path);
         release(a, entry);
     }
-    for (i = 0; i < manager->alias_count; ++i) {
-        release(a, manager->aliases[i].path);
-        release(a, manager->aliases[i].native_key);
-    }
+    return true;
+}
+
+void tf_source_manager_destroy(TfSourceManager *manager) {
+    TfAllocator a;
+    if (manager == NULL) return;
+    a = manager->allocator;
+    (void)tf_source_manager_rollback(manager, (TfSourceManagerMark){manager, 0, 0});
     release(a, manager->aliases);
     release(a, manager->entries);
     release(a, manager);
+}
+
+TfStatus tf_source_manager_overlay(TfManagedSource *out, const TfSource *source,
+                                  const char *logical_path) {
+    if (source == NULL || source->bytes == NULL || source->name == NULL ||
+        (uintmax_t)source->length > UINT64_MAX / UINT64_C(8)) return TF_HOST_ERROR;
+    *out = (TfManagedSource){0};
+    out->source = source;
+    out->canonical_path = logical_path;
+    out->status = source->valid ? TF_OK : TF_SOURCE_ERROR;
+    sha256(source->bytes, source->length, out->sha256);
+    return TF_OK;
 }
 const TfManagedSource *tf_source_manager_lookup(const TfSourceManager *manager, TfSourceId id) {
     if (manager == NULL || id.owner != manager || id.index == 0 || id.index > manager->count)

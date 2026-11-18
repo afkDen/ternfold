@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "ternfold/source_manager.h"
 #include "ternfold/diagnostics.h"
 #include "ternfold/token_dump.h"
@@ -11,6 +14,7 @@
 #include "ternfold/core_lower.h"
 #include "execution/driver_run.h"
 #include "backend/driver_native.h"
+#include "repl.h"
 
 #include <signal.h>
 #include <string.h>
@@ -19,6 +23,8 @@
 #include <io.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 static int driver_error(const char *message, int code) {
@@ -150,6 +156,7 @@ int main(int argc, char **argv) {
                   "       ternfold emit-c source.tfd [-o FILE] [--root DIR] [--diagnostics-json]\n"
                   "       ternfold build source.tfd -o EXE [--cc PATH] [--runtime-root DIR] [--sanitize]\n"
                   "                                     [--root DIR] [--diagnostics-json]\n"
+                  "       ternfold repl [--root DIR]\n"
                   "Check validates the frontend, including machine scheduling.\n"
                   "Core prints verified, structured intermediate code without executing it.\n"
                   "Emit C17 to stdout or -o FILE. Build uses --cc or TF_CC and runtime root DIR (default .).\n"
@@ -162,6 +169,19 @@ int main(int argc, char **argv) {
                   "Exit: 0 success, 1 diagnosed source error, 2 usage/host/output failure, 3 runtime fault.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
+    }
+    if (argc>=2 && strcmp(argv[1],"repl")==0) {
+        if (argc==4 && strcmp(argv[2],"--root")==0 && argv[3][0]!='\0' && argv[3][0]!='-') root=argv[3];
+        else if (argc!=2) return driver_error("expected repl [--root DIR]",2);
+#ifdef _WIN32
+        DWORD console_mode;
+        const bool console_input=GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE),&console_mode)!=0;
+        const bool prompt=console_input && GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE),&console_mode)!=0;
+        if (!console_input && _setmode(_fileno(stdin),_O_BINARY)==-1) return driver_error("cannot configure REPL input",2);
+#else
+        const bool prompt=isatty(fileno(stdin))!=0 && isatty(fileno(stdout))!=0;
+#endif
+        return tf_repl(stdin,stdout,stderr,root,prompt);
     }
     if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0 &&
                      strcmp(argv[1],"check") != 0 && strcmp(argv[1],"plan") != 0 &&

@@ -1,7 +1,7 @@
 #ifndef _WIN32
 #define _XOPEN_SOURCE 700
 #endif
-#include "ternfold/resolve.h"
+#include "repl_resolve.h"
 #include "internal.h"
 #include "source_manager_internal.h"
 #include <stdlib.h>
@@ -50,6 +50,8 @@ struct TfResolution {
     TfNodeId *pending;
     size_t pending_count, pending_capacity;
     Module *root;
+    const TfManagedSource *loaded_root;
+    TfManagedSource overlay;
     char *root_directory;
     bool failed;
     size_t cap;
@@ -395,38 +397,9 @@ static bool import_path(TfAstText p) {
     }
     return true;
 }
-static Module *load_module(TfResolution *r, const char *path, bool root, TfSpan use) {
-    const TfManagedSource *source; const char *resolved; char *abs; bool missing; size_t i; Module *m; TfLexResult lex;
+static Module *parse_module(TfResolution *r, const TfManagedSource *source, bool root) {
+    Module *m; TfLexResult lex;
     TfStatus status; TfParseOptions options = {root,64,100};
-    abs = absolute(r,path); if (abs == NULL) return NULL;
-    if (tf_source_manager_cached(r->manager,abs,&source) == TF_HOST_ERROR) {
-        r->failed = true; return NULL;
-    }
-    resolved = source != NULL ? source->canonical_path : canonical(r,abs,false,&missing);
-    if (resolved == NULL) {
-        if (!r->failed) diagnose(r,"E204",use,NULL,"module file not found or not an allowed local regular source file");
-        return NULL;
-    }
-#ifdef _WIN32
-    if (source != NULL) {
-        const wchar_t *cached = wide(r,resolved,CP_ACP);
-        if (cached == NULL) return NULL;
-        if (!local_drive_path(cached)) { diagnose(r,"E204",use,NULL,"module snapshot is not on a local drive"); return NULL; }
-    }
-#endif
-    if (r->root_directory == NULL) r->root_directory = parent(r,resolved);
-    if (r->failed) return NULL;
-    if (!contained(r,resolved)) { diagnose(r,"E204",use,NULL,"module escapes the canonical source root"); return NULL; }
-    if (r->failed) return NULL;
-    if (source == NULL) {
-        status = tf_source_manager_load_resolved(r->manager,abs,resolved,&source);
-        if (status == TF_HOST_ERROR) { r->failed = true; return NULL; }
-        /* Recheck actual snapshot capability after the initial filesystem probe. */
-        if (!contained(r,source->canonical_path)) { diagnose(r,"E204",use,NULL,"module snapshot escapes the canonical source root"); return NULL; }
-    }
-    for (i = 0; i < r->modules.count; ++i) {
-        m = r->modules.items[i]; if (m->view.source == source) return m;
-    }
     m = allocate(r,1,sizeof(*m)); if (m == NULL) return NULL;
     m->view.source = source; m->view.is_root = root;
     if (!append(r,&r->modules,m)) return NULL;
@@ -442,8 +415,52 @@ static Module *load_module(TfResolution *r, const char *path, bool root, TfSpan 
     m->view.ast = tf_parse_ast(m->parse); copy_diagnostics(r,tf_parse_diagnostics(m->parse),source->source);
     return m;
 }
+static bool allowed_snapshot(TfResolution *r, const char *path, TfSpan use) {
+#ifdef _WIN32
+    const wchar_t *cached = wide(r,path,CP_ACP);
+    if (cached == NULL) return false;
+    if (!local_drive_path(cached)) {
+        diagnose(r,"E204",use,NULL,"module snapshot is not on a local drive");
+        return false;
+    }
+#else
+    (void)r; (void)path; (void)use;
+#endif
+    return true;
+}
+static Module *load_module(TfResolution *r, const char *path, bool root, TfSpan use) {
+    const TfManagedSource *source; const char *resolved; char *abs; bool missing; size_t i;
+    TfStatus status;
+    abs = absolute(r,path); if (abs == NULL) return NULL;
+    if (tf_source_manager_cached(r->manager,abs,&source) == TF_HOST_ERROR) {
+        r->failed = true; return NULL;
+    }
+    resolved = source != NULL ? source->canonical_path : canonical(r,abs,false,&missing);
+    if (resolved == NULL) {
+        if (!r->failed) diagnose(r,"E204",use,NULL,"module file not found or not an allowed local regular source file");
+        return NULL;
+    }
+    if (source != NULL && !allowed_snapshot(r,resolved,use)) return NULL;
+    if (r->root_directory == NULL) r->root_directory = parent(r,resolved);
+    if (r->failed) return NULL;
+    if (!contained(r,resolved)) { diagnose(r,"E204",use,NULL,"module escapes the canonical source root"); return NULL; }
+    if (r->failed) return NULL;
+    if (source == NULL) {
+        status = tf_source_manager_load_resolved(r->manager,abs,resolved,&source);
+        if (status == TF_HOST_ERROR) { r->failed = true; return NULL; }
+        /* Recheck actual snapshot capability after the initial filesystem probe. */
+        if (!contained(r,source->canonical_path)) { diagnose(r,"E204",use,NULL,"module snapshot escapes the canonical source root"); return NULL; }
+    }
+    if (source == r->loaded_root) return r->root;
+    for (i = 0; i < r->modules.count; ++i) {
+        Module *m = r->modules.items[i]; if (m->view.source == source) return m;
+    }
+    return parse_module(r,source,root);
+}
 static char *import_request(TfResolution *r, Module *m, TfAstText path) {
-    char *dir = parent(r,m->view.source->canonical_path), *out; size_t n, join;
+    const char *dir = m->view.source == &r->overlay && r->loaded_root == NULL ? r->root_directory :
+        parent(r,m->view.source->canonical_path);
+    char *out; size_t n, join;
     const char *bytes = (const char *)path.data;
     if (dir == NULL) return NULL;
 #ifdef _WIN32
@@ -984,19 +1001,24 @@ static void bodies(TfResolution *r, Module *m) {
         } else if (n->kind == TF_AST_MACHINE) machine_body(r,env,n,ordinal);
     }
 }
-TfStatus tf_resolve(TfResolution **out, TfSourceManager *manager, const char *entry_path,
-                    const TfResolveOptions *options, const TfAllocator *allocator) {
+static TfStatus resolve(TfResolution **out, TfSourceManager *manager, const char *entry_path,
+                        const TfSource *virtual_source, const TfManagedSource *loaded_root,
+                        const TfResolveOptions *options, const TfAllocator *allocator) {
     TfAllocator a = tf_allocator(allocator); TfResolution *r; Module **order;
+    const char *root_directory = options != NULL ? options->root_directory : NULL;
     size_t i; bool missing;
     if (out == NULL) return TF_HOST_ERROR;
     *out = NULL;
-    if (manager == NULL || entry_path == NULL || entry_path[0] == 0 || !tf_allocator_valid(a) ||
+    if (manager == NULL || (virtual_source == NULL && (entry_path == NULL || entry_path[0] == 0)) ||
+        (loaded_root != NULL && tf_source_manager_lookup(manager,loaded_root->id) != loaded_root) ||
+        !tf_allocator_valid(a) ||
         (options != NULL && options->diagnostic_cap > 100)) return TF_HOST_ERROR;
     r = a.allocate(a.context,sizeof(*r)); if (r == NULL) return TF_HOST_ERROR;
     *r = (TfResolution){0}; r->allocator = a; r->manager = manager; r->cap = options != NULL ? options->diagnostic_cap : 100;
     if (tf_diagnostic_bag_create(&r->diagnostics,r->cap,&a) != TF_OK) goto fail;
-    if (options != NULL && options->root_directory != NULL) {
-        char *abs = absolute(r,options->root_directory);
+    r->loaded_root = loaded_root;
+    if (root_directory != NULL || (virtual_source != NULL && loaded_root == NULL)) {
+        char *abs = absolute(r,root_directory != NULL ? root_directory : ".");
         if (abs == NULL) goto fail;
         r->root_directory = canonical(r,abs,true,&missing);
         if (r->root_directory == NULL) goto fail; /* invalid root is a host capability error */
@@ -1008,14 +1030,29 @@ TfStatus tf_resolve(TfResolution **out, TfSourceManager *manager, const char *en
         }
 #endif
     }
-    if (strlen(entry_path) < 4 || strcmp(entry_path+strlen(entry_path)-4,".tfd") != 0)
+    if (virtual_source != NULL) {
+        const char *path = loaded_root != NULL ? loaded_root->canonical_path : "<repl>";
+        if (loaded_root != NULL && r->root_directory == NULL) {
+            r->root_directory = parent(r,path);
+            if (r->root_directory == NULL) goto fail;
+        }
+        if (loaded_root != NULL && !allowed_snapshot(r,path,(TfSpan){0})) {
+            /* The native path adapter recorded the failure. */
+        } else if (loaded_root != NULL && !contained(r,path)) {
+            diagnose(r,"E204",(TfSpan){0},NULL,"module escapes the canonical source root");
+        } else {
+            if (tf_source_manager_overlay(&r->overlay,virtual_source,path) != TF_OK) goto fail;
+            r->root = parse_module(r,&r->overlay,true);
+        }
+    } else if (strlen(entry_path) < 4 || strcmp(entry_path+strlen(entry_path)-4,".tfd") != 0)
         diagnose(r,"E204",(TfSpan){0},NULL,"entry requires a .tfd extension");
     else r->root = load_module(r,entry_path,true,(TfSpan){0});
     load_graph(r);
     if (r->failed) goto fail;
     for (i = 0; i < r->modules.count && !r->failed; ++i) {
         Module *m = r->modules.items[i];
-        m->view.relative_path = relative_path(r,m->view.source->canonical_path);
+        m->view.relative_path = m == r->root && virtual_source != NULL && loaded_root == NULL ?
+            r->overlay.canonical_path : relative_path(r,m->view.source->canonical_path);
         if (m->view.relative_path == NULL) goto fail;
     }
     if (r->modules.count != 0) qsort(r->modules.items,r->modules.count,sizeof(*r->modules.items),module_compare);
@@ -1034,6 +1071,19 @@ TfStatus tf_resolve(TfResolution **out, TfSourceManager *manager, const char *en
     *out = r; return TF_OK;
 fail:
     tf_resolution_destroy(r); return TF_HOST_ERROR;
+}
+TfStatus tf_resolve(TfResolution **out, TfSourceManager *manager, const char *entry_path,
+                    const TfResolveOptions *options, const TfAllocator *allocator) {
+    return resolve(out,manager,entry_path,NULL,NULL,options,allocator);
+}
+TfStatus tf_resolve_virtual(TfResolution **out, TfSourceManager *manager,
+                            const TfSource *virtual_source, const TfManagedSource *loaded_root,
+                            const TfResolveOptions *options, const TfAllocator *allocator) {
+    if (virtual_source == NULL) {
+        if (out != NULL) *out = NULL;
+        return TF_HOST_ERROR;
+    }
+    return resolve(out,manager,NULL,virtual_source,loaded_root,options,allocator);
 }
 void tf_resolution_destroy(TfResolution *r) {
     Allocation *p; size_t i; TfAllocator a; Table *tables[6];

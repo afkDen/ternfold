@@ -1,6 +1,7 @@
 #define TERNFOLD_AST_BUILD
 #include "ternfold/parser.h"
 #include "internal.h"
+#include "repl_parse.h"
 #include <string.h>
 
 struct TfParseResult {
@@ -14,7 +15,7 @@ typedef struct {
     TfParseResult *result;
     TfParseOptions options;
     size_t at, end, depth;
-    bool failed;
+    bool failed, saw_error, interior_error;
     TfAstNode dummy;
 } Parser;
 
@@ -48,6 +49,8 @@ static void diagnose(Parser *p, const char *code, TfSpan where, const char *mess
     TfDiagnosticLabel label = {where,true,{NULL,0}};
     TfDiagnosticRecord r = {0};
     if (p->failed) return;
+    p->saw_error = true;
+    if (where.start != p->lex->source->length || where.end != where.start) p->interior_error = true;
     r.code = code; r.severity = TF_DIAG_ERROR; r.message = (TfDiagnosticText){message,strlen(message)};
     r.labels = &label; r.label_count = 1;
     if (tf_diagnostic_bag_add(p->result->diagnostics,&r) != TF_OK) p->failed = true;
@@ -487,9 +490,25 @@ static bool input_valid(const TfLexResult *lex) {
     }
     return true;
 }
+static void parse_module(Parser *p) {
+    bool declarations = false;
+    TfAstNode *program = node(p,TF_AST_PROGRAM,0);
+    while (kind(p) != TF_EOF) {
+        size_t before = p->at; TfAstNode *decl;
+        if (kind(p) == TF_IMPORT && declarations) diagnose(p,"E110",peek(p)->span,"imports must precede declarations");
+        if (kind(p) != TF_IMPORT) declarations = true;
+        decl = declaration(p); append(p,&program->as.program.declarations,decl->id);
+        if (p->at == before && kind(p) != TF_EOF) {
+            TfAstNode *error = node(p,TF_AST_ERROR,peek(p)->span.start); (void)take(p);
+            append(p,&program->as.program.declarations,finish(p,error)->id);
+        }
+    }
+    program->span.end = p->lex->source->length; tf_ast_set_root(p->result->ast,program->id);
+}
+
 TfStatus tf_parse(TfParseResult **out, const TfLexResult *lex,
                   const TfParseOptions *options, const TfAllocator *allocator) {
-    TfAllocator a = tf_allocator(allocator); TfParseResult *r; Parser p = {0}; TfAstNode *program; bool declarations = false;
+    TfAllocator a = tf_allocator(allocator); TfParseResult *r; Parser p = {0};
     if (out == NULL) return TF_HOST_ERROR;
     *out = NULL;
     if (!tf_allocator_valid(a) || !input_valid(lex)) return TF_HOST_ERROR;
@@ -500,22 +519,40 @@ TfStatus tf_parse(TfParseResult **out, const TfLexResult *lex,
     if (r->ast == NULL || tf_diagnostic_bag_create(&r->diagnostics,p.options.diagnostic_cap,&a) != TF_OK ||
         tf_diagnostic_bag_lexer(r->diagnostics,lex) != TF_OK) goto fail;
     p.lex = lex; p.result = r; p.dummy.span.source = lex->source;
-    program = node(&p,TF_AST_PROGRAM,0);
-    while (kind(&p) != TF_EOF) {
-        size_t before = p.at; TfAstNode *decl;
-        if (kind(&p) == TF_IMPORT && declarations) diagnose(&p,"E110",peek(&p)->span,"imports must precede declarations");
-        if (kind(&p) != TF_IMPORT) declarations = true;
-        decl = declaration(&p); append(&p,&program->as.program.declarations,decl->id);
-        if (p.at == before && kind(&p) != TF_EOF) {
-            TfAstNode *error = node(&p,TF_AST_ERROR,peek(&p)->span.start); (void)take(&p);
-            append(&p,&program->as.program.declarations,finish(&p,error)->id);
-        }
-    }
-    program->span.end = lex->source->length; tf_ast_set_root(r->ast,program->id);
+    parse_module(&p);
     if (p.failed) goto fail;
     if ((tf_diagnostic_bag_has_errors(r->diagnostics) ? tf_diagnostic_phase_error(&r->phase,r->diagnostics) :
          tf_diagnostic_phase_valid(&r->phase,r->ast,r->diagnostics)) != TF_OK) goto fail;
     *out = r; return TF_OK;
 fail:
     tf_parse_destroy(r); return TF_HOST_ERROR;
+}
+
+TfStatus tf_parse_repl_prefix(const TfLexResult *lex,TfReplParseKind kind_requested,bool *incomplete) {
+    if (incomplete==NULL) return TF_HOST_ERROR;
+    *incomplete=false;
+    if (!input_valid(lex)) return TF_HOST_ERROR;
+    const TfAllocator a=lex->allocator;
+    if (!tf_allocator_valid(a)) return TF_HOST_ERROR;
+    TfParseResult r={.allocator=a};
+    r.ast=tf_ast_create(lex->source,a);
+    if (r.ast==NULL || tf_diagnostic_bag_create(&r.diagnostics,0,&a)!=TF_OK) {
+        tf_ast_destroy(r.ast);
+        return TF_HOST_ERROR;
+    }
+    Parser p={.lex=lex,.result=&r,.options={true,64,0}};
+    p.dummy.span.source=lex->source;
+    switch (kind_requested) {
+    case TF_REPL_PARSE_MODULE: parse_module(&p); break;
+    case TF_REPL_PARSE_LET:
+        if (kind(&p)==TF_LET) (void)statement(&p,false);
+        else p.failed=true;
+        break;
+    case TF_REPL_PARSE_EXPRESSION: (void)expression(&p,0); break;
+    default: p.failed=true; break;
+    }
+    if (!p.failed && kind(&p)!=TF_EOF) p.interior_error=true;
+    if (!p.failed) *incomplete=p.saw_error && !p.interior_error;
+    tf_diagnostic_bag_destroy(r.diagnostics); tf_ast_destroy(r.ast);
+    return p.failed ? TF_HOST_ERROR : TF_OK;
 }

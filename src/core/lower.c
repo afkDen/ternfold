@@ -1,4 +1,4 @@
-#include "ternfold/core_lower.h"
+#include "repl_lower.h"
 #include "lower_constants.h"
 #include "lower_match.h"
 #include "../check_internal.h"
@@ -46,6 +46,8 @@ typedef struct {
     size_t block_count, block_capacity, value_count, depth;
     TfCoreFunctionId function;
     TfCoreFunctionId entry;
+    TfSymbolId repl_wrapper;
+    TfNodeId repl_result;
     TfCoreLowerIssue issue;
     bool failed;
 } Lower;
@@ -513,13 +515,15 @@ static bool binding(Lower *l, const TfAstNode *statement, TfCoreValueId value) {
     return set_binding(l,index,value);
 }
 
-static TfCoreValueId lower_block(Lower *l, TfCoreBlockId b, const TfAstNode *n) {
+static TfCoreValueId lower_block(Lower *l, TfCoreBlockId b, const TfAstNode *n,
+                                 const TfAstNode *selected, TfCoreValueId *selected_value) {
     const TfNodeList statements=n->as.block.statements;
     for (size_t i=0; i<statements.count && !l->failed; ++i) {
         const TfAstNode *statement=node(statements.items[i]);
         if (statement==NULL || statement->kind!=TF_AST_LET)
             return fail_at(l,TF_CORE_LOWER_UNSUPPORTED_FORM,statement);
         const TfCoreValueId value=expression(l,b,statement->as.binding.value);
+        if (statement==selected) *selected_value=value;
         if (!statement->as.binding.discard && !binding(l,statement,value)) return 0;
     }
     return expression(l,b,n->as.block.final_expression);
@@ -690,7 +694,7 @@ static TfCoreValueId expression(Lower *l, TfCoreBlockId b, TfNodeId id) {
         break;
     }
     case TF_AST_GROUP: v=expression(l,b,n->as.group.expression); break;
-    case TF_AST_BLOCK: v=lower_block(l,b,n); break;
+    case TF_AST_BLOCK: v=lower_block(l,b,n,NULL,NULL); break;
     case TF_AST_UNARY: case TF_AST_BINARY: v=operation(l,b,n,type); break;
     case TF_AST_CALL: v=call(l,b,n,type); break;
     case TF_AST_FOR: v=comprehension(l,b,n,type); break;
@@ -802,9 +806,26 @@ static bool function(Lower *l, const TfResolvedSymbol *s) {
     const TfAstNode *body=node(n->as.function.body);
     out.body=new_block(l,body->span);
     if (l->failed) return false;
-    const TfCoreValueId value=s->entry_only ? entry_body(l,out.body,body,params[0]) :
-                                            expression(l,out.body,body->id);
-    finish(l,out.body,value,body->span);
+    TfCoreValueId value;
+    TfSpan yield_span=body->span;
+    if (l->repl_wrapper.index==symbol) {
+        const TfAstNode *selected=node(l->repl_result);
+        const TfAstNode *initializer=node(selected->as.binding.value);
+        const TfConcreteType *body_result=tf_type_store_get(l->store,signature->as.function.result);
+        if (body_result==NULL || body_result->kind!=TF_CONCRETE_UNIT)
+            return fail_at(l,TF_CORE_LOWER_INVARIANT,n)!=0;
+        out.result=type_of(l,initializer);
+        yield_span=initializer->span;
+        value=0;
+        ++l->depth; /* Match normal expression lowering of the enclosing block. */
+        const TfCoreValueId unit=lower_block(l,out.body,body,selected,&value);
+        --l->depth;
+        if (unit==0 || value==0) return fail_at(l,TF_CORE_LOWER_INVARIANT,selected)!=0;
+    } else {
+        value=s->entry_only ? entry_body(l,out.body,body,params[0]) :
+                              expression(l,out.body,body->id);
+    }
+    finish(l,out.body,value,yield_span);
     if (!save_function(l,out)) return false;
     if (is_entry) l->entry=l->targets[symbol];
     return true;
@@ -944,8 +965,28 @@ static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeI
     return save_function(l,out);
 }
 
-TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
-                       const TfAllocator *allocator, TfCoreLowerIssue *issue) {
+static bool select_repl(Lower *l, TfSymbolId wrapper, TfNodeId result) {
+    const TfResolvedSymbol *s=tf_resolution_symbol(l->resolution,wrapper);
+    if (s==NULL || s->kind!=TF_SYMBOL_FUNCTION || s->public_decl || s->entry_only) return false;
+    const TfResolvedModule *module=tf_resolution_module(l->resolution,s->module);
+    const TfAstNode *fn=node(s->declaration);
+    if (module==NULL || !module->is_root || result.owner!=module->ast ||
+        fn==NULL || fn->kind!=TF_AST_FUNCTION || fn->as.function.parameters.count!=0) return false;
+    const TfAstNode *body=node(fn->as.function.body), *selected=node(result);
+    if (body==NULL || body->kind!=TF_AST_BLOCK || selected==NULL || selected->kind!=TF_AST_LET) return false;
+    const TfNodeList statements=body->as.block.statements;
+    for (size_t i=0; i<statements.count; ++i) {
+        if (node(statements.items[i])!=selected) continue;
+        l->repl_wrapper=wrapper;
+        l->repl_result=result;
+        return true;
+    }
+    return false;
+}
+
+static TfStatus lower(TfCoreProgram **out, TfCoreFunctionId *repl_function,
+                      const TfMachineProgram *p, TfSymbolId wrapper, TfNodeId result,
+                      const TfAllocator *allocator, TfCoreLowerIssue *issue) {
     Lower l={.allocator=tf_allocator(allocator),.scratch_bytes=LOWER_SCRATCH,.match_work=LOWER_MATCH_WORK};
     TfStatus status=TF_HOST_ERROR;
     if (issue!=NULL) *issue=(TfCoreLowerIssue){0};
@@ -957,6 +998,7 @@ TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
     l.typed=tf_machine_program_typed(p);
     l.resolution=tf_typed_program_resolution(l.typed);
     l.store=tf_typed_program_store(l.typed);
+    if (repl_function!=NULL && !select_repl(&l,wrapper,result)) return TF_HOST_ERROR;
     l.symbol_count=tf_resolution_symbol_count(l.resolution);
     if (l.symbol_count==SIZE_MAX) goto done;
     l.targets=array(&l,l.symbol_count+1,sizeof *l.targets);
@@ -991,6 +1033,7 @@ TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
     tf_core_lower_type_view(l.types,&d);
     tf_core_lower_constant_view(l.constants,&d);
     status=tf_core_program_copy(out,&d,&l.allocator);
+    if (status==TF_OK && repl_function!=NULL) *repl_function=l.targets[l.repl_wrapper.index];
 done:
     tf_core_lower_constants_destroy(l.constants);
     tf_core_lower_types_destroy(l.types);
@@ -1001,4 +1044,21 @@ done:
     }
     if (issue!=NULL && status!=TF_OK) *issue=l.issue;
     return status;
+}
+
+TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
+                       const TfAllocator *allocator, TfCoreLowerIssue *issue) {
+    return lower(out,NULL,p,(TfSymbolId){0},(TfNodeId){0},allocator,issue);
+}
+
+TfStatus tf_core_lower_repl(TfCoreProgram **out, TfCoreFunctionId *function,
+                           const TfMachineProgram *p, TfSymbolId wrapper, TfNodeId result_let,
+                           const TfAllocator *allocator, TfCoreLowerIssue *issue) {
+    if (function==NULL) {
+        if (out!=NULL) *out=NULL;
+        if (issue!=NULL) *issue=(TfCoreLowerIssue){0};
+        return TF_HOST_ERROR;
+    }
+    *function=0;
+    return lower(out,function,p,wrapper,result_let,allocator,issue);
 }
