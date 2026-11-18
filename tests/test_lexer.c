@@ -154,6 +154,8 @@ static void test_numbers(void) {
         {"1e+", TF_E102, 3}, {"1efoo", TF_E102, 5}, {"1.2.3", TF_E102, 5},
         {"1e++2", TF_E102, 3}, {"1efoo.bar", TF_E102, 5}, {"1e999foo", TF_E102, 8},
         {"1e2e3", TF_E102, 5}, {"0x10", TF_E102, 4}, {"1_000", TF_E102, 5},
+        {"1name+2", TF_E102, 5}, {"1e2e-3", TF_E102, 4},
+        {"1.2.3e+4", TF_E102, 6}, {"00e+2", TF_E102, 5},
         {"01.5e-3", TF_E102, 7}, {"1e", TF_E102, 2}, {"1e-", TF_E102, 3},
         {"1.2e+foo", TF_E102, 8}, {"1e.2", TF_E102, 4}};
     size_t i;
@@ -187,6 +189,12 @@ static void test_numbers(void) {
             TF_INVALID, TF_PLUS, TF_INT, TF_INVALID, TF_COMMENT_BLOCK, TF_PLUS, TF_INT};
         kinds("1.foo 1.2.foo .5 1. -2 1e++2 09/**/+2", expected,
                sizeof(expected) / sizeof(expected[0]), true);
+    }
+    {
+        const TfTokenKind expected[] = {TF_INVALID, TF_PLUS, TF_INT, TF_INVALID,
+            TF_MINUS, TF_INT, TF_INVALID, TF_PLUS, TF_INT, TF_INVALID, TF_INVALID};
+        kinds("1name+2 1e2e-3 1.2.3e+4 00e+2 01.5e-3", expected,
+              sizeof(expected) / sizeof(expected[0]), true);
     }
 }
 
