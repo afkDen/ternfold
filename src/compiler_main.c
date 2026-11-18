@@ -1,0 +1,83 @@
+#include "ternfold/source_manager.h"
+#include "ternfold/diagnostics.h"
+#include "ternfold/token_dump.h"
+
+#include <signal.h>
+#include <string.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
+static int driver_error(const char *message, int code) {
+    if (fprintf(stderr,"ternfold: %s\n",message) < 0 || fflush(stderr) != 0) return 2;
+    return code;
+}
+static bool extension(const char *path) {
+    size_t length = strlen(path);
+    return length >= 4 && strcmp(path+length-4,".tfd") == 0;
+}
+int main(int argc, char **argv) {
+    TfSourceManager *manager = NULL;
+    TfDiagnosticBag *bag = NULL;
+    const TfManagedSource *entry = NULL;
+    TfLexResult lex = {0};
+    TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
+    TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
+    const char *directory = NULL, *failure = NULL;
+    TfStatus status;
+    int i, code = 2;
+#ifdef _WIN32
+    if (_setmode(_fileno(stdout),_O_BINARY) == -1 || _setmode(_fileno(stderr),_O_BINARY) == -1) return 2;
+#else
+    if (signal(SIGPIPE,SIG_IGN) == SIG_ERR) return 2;
+#endif
+    if (argc == 2 && strcmp(argv[1],"--help") == 0) {
+        if (fputs("Usage: ternfold tokens source.tfd [--json] [--diagnostics-json] [--symbol-table DIR]\n"
+                  "Options follow source, in any order, once each. DIR must already exist.\n"
+                  "Inspects lexical tokens only; no parsing, checking, execution or C compilation.\n"
+                  "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
+                  "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
+                  "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
+                  "Paths follow native SourceManager capabilities (Windows ANSI, queryable insensitive ancestors).\n"
+                  "Exit: 0 lexical success, 1 extension/source/lexical error, 2 usage/host/output failure.\n",stdout) == EOF ||
+            fflush(stdout) != 0) return 2;
+        return fflush(stderr) == 0 ? 0 : 2;
+    }
+    if (argc < 3 || strcmp(argv[1],"tokens") != 0 || argv[2][0] == '\0' || argv[2][0] == '-')
+        return driver_error("expected tokens source.tfd; use --help (check/run/compile are unavailable)",2);
+    for (i = 3; i < argc; ++i) {
+        if (strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
+        else if (strcmp(argv[i],"--diagnostics-json") == 0 && diagnostic_format == TF_DIAG_TEXT) diagnostic_format = TF_DIAG_JSON;
+        else if (strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
+                 argv[i+1][0] != '-') directory = argv[++i];
+        else return driver_error("unknown, duplicate or incomplete option; use --help",2);
+    }
+    if (!extension(argv[2])) return driver_error("source file extension must be exactly .tfd",1);
+    if (tf_source_manager_create(&manager,NULL) != TF_OK || tf_diagnostic_bag_create(&bag,100,NULL) != TF_OK) {
+        failure = "cannot allocate compiler session"; goto cleanup;
+    }
+    status = tf_source_manager_load(manager,argv[2],&entry);
+    if (status == TF_HOST_ERROR) { failure = "cannot load source (read/path capability/allocation failure)"; goto cleanup; }
+    if (status == TF_SOURCE_ERROR) {
+        if (tf_diagnostic_bag_source(bag,entry->source) != TF_OK) { failure = "cannot build source diagnostics"; goto cleanup; }
+        code = 1;
+    } else {
+        status = tf_lex(&lex,entry->source,100,NULL);
+        if (status == TF_HOST_ERROR || tf_diagnostic_bag_lexer(bag,&lex) != TF_OK) {
+            failure = "cannot build lexical result or diagnostics"; goto cleanup;
+        }
+        code = status == TF_LEX_ERROR ? 1 : 0;
+    }
+    if (directory != NULL && tf_report_publish(entry->source->valid ? &lex : NULL,entry->source,directory) != TF_OK) {
+        code = 2; failure = "cannot publish Symbol Table.txt";
+    }
+    if (tf_token_dump_write(stdout,entry->source,entry->source->valid ? &lex : NULL,dump_format) != TF_OK ||
+        fflush(stdout) != 0) { code = 2; failure = "cannot write token output"; }
+    if (tf_diagnostic_bag_write(stderr,bag,diagnostic_format,TF_DIAG_COLOR_NEVER) != TF_OK ||
+        fflush(stderr) != 0) { code = 2; failure = "cannot write diagnostics"; }
+cleanup:
+    tf_lex_destroy(&lex); tf_diagnostic_bag_destroy(bag); tf_source_manager_destroy(manager);
+    if (failure != NULL) return driver_error(failure,2);
+    return code;
+}
