@@ -1,0 +1,12 @@
+machine Child(delta: Int) yields Text rejects Text {
+    state n: Int = 0;
+    next n = delta;
+    emit "private first";
+    emit int_text(1 div delta);
+}
+pub fn main() -> List[Text] {
+    output "staged";
+    let first = step(Child(), 1);
+    let second = step(Child(), 0);
+    ["unreachable"]
+}

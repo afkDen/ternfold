@@ -1,0 +1,47 @@
+// Current 0.2 syntax only. Eager child steps, private decisions, explicit policy.
+pub machine Cell(delta: Int) yields Text rejects Int {
+    state n: Int = 0;
+    next n = n + delta;
+    guard next.n >= 0 else 1;
+    guard next.n <= 3 else 2;
+    emit "7=" ++ int_text(next.n) ++ ";";
+    emit "7=" ++ int_text(next.n) ++ ";";
+}
+pub enum Joint {
+    Accept(Cell, Cell, List[Text]),
+    Reject(Cell, Cell, Int, Int)
+}
+pub fn compose(a: Cell, z: Cell, da: Int, dz: Int) -> Joint {
+    let left = step(a, da);
+    let right = step(z, dz);
+    match left {
+        Decision::Reject(held, reason) => { Joint::Reject(a, z, 97, reason) },
+        Decision::Accept(candidate_a, events_a) => {
+            match right {
+                Decision::Reject(held, reason) => { Joint::Reject(a, z, 122, reason) },
+                Decision::Accept(candidate_z, events_z) => {
+                    Joint::Accept(candidate_a, candidate_z, events_a ++ events_z)
+                }
+            }
+        }
+    }
+}
+pub fn seed(n: Int) -> Cell {
+    match step(Cell(), n) {
+        Decision::Accept(snapshot, events) => { snapshot },
+        Decision::Reject(snapshot, reason) => { snapshot }
+    }
+}
+pub fn report(a: Cell, z: Cell, da: Int, dz: Int) -> Text {
+    match compose(a, z, da, dz) {
+        Joint::Accept(new_a, new_z, events) => {
+            "A " ++ int_text(a.n) ++ " " ++ int_text(z.n) ++ " " ++
+            int_text(new_a.n) ++ " " ++ int_text(new_z.n) ++ " " ++
+            fold(events, "", fn (s: Text, e: Text) -> Text { s ++ e })
+        },
+        Joint::Reject(old_a, old_z, member, reason) => {
+            "R " ++ int_text(member) ++ " " ++ int_text(reason) ++ " " ++
+            int_text(old_a.n) ++ " " ++ int_text(old_z.n) ++ " 0"
+        }
+    }
+}

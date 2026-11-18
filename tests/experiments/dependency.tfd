@@ -1,0 +1,14 @@
+machine Dag(delta: Int) yields Int rejects Text {
+    state a: Int = 0;
+    state z: Int = 0;
+    next a = next.z + delta;
+    next z = delta;
+    emit next.z;
+    emit next.a;
+}
+pub fn main() -> List[Text] {
+    match step(Dag(), 1) {
+        Decision::Accept(s, events) => { [int_text(s.a), int_text(s.z)] },
+        Decision::Reject(s, reason) => { [reason] }
+    }
+}

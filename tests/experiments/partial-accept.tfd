@@ -1,0 +1,23 @@
+import "library.tfd" as lib;
+fn inner(delta: Int) -> Int {
+    match step(lib::Cell(), delta) {
+        Decision::Accept(candidate, events) => { candidate.n },
+        Decision::Reject(held, reason) => { held.n }
+    }
+}
+machine Outer(delta: Int) yields Text rejects Text {
+    state n: Int = 0;
+    next n = inner(delta);
+    guard false else "outer reject";
+    emit "unreachable";
+}
+pub fn main() -> List[Text] {
+    let a = lib::Cell();
+    let z = lib::Cell();
+    let report = lib::report(a, z, 1, -1);
+    let outer = match step(Outer(), 1) {
+        Decision::Reject(old, reason) => { reason ++ " " ++ int_text(old.n) },
+        Decision::Accept(candidate, events) => { "unexpected" }
+    };
+    [report, outer, "old " ++ int_text(a.n) ++ " " ++ int_text(z.n)]
+}

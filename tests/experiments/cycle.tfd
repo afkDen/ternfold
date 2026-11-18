@@ -1,0 +1,7 @@
+machine Cycle(delta: Int) yields Int rejects Text {
+    state z: Int = 0;
+    state a: Int = 0;
+    next a = if false { next.z } else { delta };
+    next z = next.a;
+}
+pub fn main() -> List[Text] { [] }

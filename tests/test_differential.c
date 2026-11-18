@@ -31,6 +31,8 @@ enum { PATH_CAP = 4096, BYTE_CAP = 128 * 1024, TIMEOUT_MS = 60000 };
 static const char scratch[] = "tmp/m11-differential";
 static const char *current;
 static char work[PATH_CAP], out[PATH_CAP], err[PATH_CAP], input[PATH_CAP], native[PATH_CAP];
+static size_t traced_execution_pairs;
+static const char *child_stdin; /* NULL selects the null device. */
 
 #define CHECK(ok) do { if (!(ok)) { \
     fprintf(stderr,"differential:%d: %s (%s); captures in %s\n",__LINE__,#ok,current,work); \
@@ -271,7 +273,7 @@ static int spawn(const char *const args[]) {
     PROCESS_INFORMATION pi={0};
     si.cb=sizeof si;
     si.dwFlags=STARTF_USESTDHANDLES;
-    si.hStdInput=stream("NUL",true);
+    si.hStdInput=stream(child_stdin ? child_stdin : "NUL",true);
     si.hStdOutput=stream(out,false);
     si.hStdError=stream(err,false);
     char *line=command_line(args);
@@ -307,7 +309,7 @@ static int spawn(const char *const args[]) {
     CHECK(pid>=0);
     if (pid==0) {
         if (setpgid(0,0)!=0) _exit(126);
-        const int descriptors[]={open("/dev/null",O_RDONLY),
+        const int descriptors[]={open(child_stdin ? child_stdin : "/dev/null",O_RDONLY),
             open(out,O_WRONLY|O_CREAT|O_TRUNC,0600),open(err,O_WRONLY|O_CREAT|O_TRUNC,0600)};
         for (int i=0;i<3;++i) {
             if (descriptors[i]<0 || dup2(descriptors[i],i)<0) _exit(126);
@@ -552,6 +554,7 @@ static void differential(const char *compiler, const char *cc, const char *root,
 }
 
 static void traced_case(const char *compiler,const Case *test,const char *module_root) {
+    ++traced_execution_pairs;
     char reference[PATH_CAP],compiled[PATH_CAP],ref_map[PATH_CAP],native_map[PATH_CAP];
     join(reference,work,"reference.trace"); join(compiled,work,"native.trace");
     join(ref_map,work,"reference.trace.origins"); join(native_map,work,"native.trace.origins");
@@ -797,6 +800,76 @@ static void reproducible_pipeline(const char *compiler,const char *cc,
     printf("determinism: 5 byte-identical dumps and 2 independently built native runs\n");
 }
 
+static size_t lsp_frames(const Bytes bytes) {
+    size_t at=0,frames=0;
+    static const char header[]="Content-Length: ";
+    while (at<bytes.length) {
+        CHECK(bytes.length-at>=sizeof header-1 &&
+              memcmp(bytes.data+at,header,sizeof header-1)==0);
+        at+=sizeof header-1;
+        size_t length=0,digits=0;
+        while (at<bytes.length && bytes.data[at]>='0' && bytes.data[at]<='9') {
+            const size_t digit=(size_t)(bytes.data[at++]-'0');
+            CHECK(length<=(BYTE_CAP-digit)/10);
+            length=length*10+digit; ++digits;
+        }
+        CHECK(digits && bytes.length-at>=4 && memcmp(bytes.data+at,"\r\n\r\n",4)==0);
+        at+=4; CHECK(length<=bytes.length-at);
+        Json json={0}; json.t=calloc(JSON_TOKENS,sizeof *json.t);
+        CHECK(json.t && jparse(&json,bytes.data+at,length));
+        CHECK(jequal(&json,jfield(&json,0,"jsonrpc"),"2.0"));
+        free(json.t); at+=length; ++frames;
+    }
+    return frames;
+}
+static void tooling_cli(const char *compiler) {
+    current="formatter/editor binary integration";
+    char source[PATH_CAP],canonical[PATH_CAP];
+    join(source,work,"format source.tfd"); join(canonical,work,"canonical.tfd");
+    static const char original[]="pub fn main()->List[Text]{/*keep*/[\"value\"]}";
+    write_bytes(source,original,sizeof original-1);
+    const char *fmt[]={compiler,"fmt",source,NULL};
+    run(fmt,0); expect(err,"",0); contains(out,"/*keep*/");
+    const Bytes formatted=read_bytes(out); write_bytes(canonical,formatted.data,formatted.length);
+    const char *again[]={compiler,"fmt",canonical,NULL};
+    run(again,0); expect(out,formatted.data,formatted.length); expect(err,"",0);
+    free(formatted.data);
+    const char *check[]={compiler,"fmt",canonical,"--check",NULL};
+    run(check,0); expect(out,"",0); expect(err,"",0);
+    const char *diff[]={compiler,"fmt",source,"--check",NULL};
+    run(diff,1); expect(out,"",0); contains(err,"differs");
+    write_bytes(source,"pub fn bad( -> Int {",sizeof "pub fn bad( -> Int {"-1);
+    run(fmt,1); expect(out,"",0); contains(err,"E110");
+    CHECK(remove(source)==0 && remove(canonical)==0);
+
+    static const char *const requests[]={
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+        ("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{"
+        "\"uri\":\"file:///draft.tfd\",\"languageId\":\"ternfold\",\"version\":1,\"text\":\"fn f() -> Int { true }\"}}}"),
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\",\"params\":null}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}"
+    };
+    FILE *file=fopen(input,"wb"); CHECK(file);
+    for (size_t i=0;i<sizeof requests/sizeof *requests;++i) {
+        const size_t n=strlen(requests[i]);
+        CHECK(fprintf(file,"Content-Length: %zu\r\n\r\n",n)>0);
+        CHECK(fwrite(requests[i],1,n,file)==n);
+    }
+    CHECK(fclose(file)==0);
+    const char *lsp[]={compiler,"lsp","--root",work,NULL};
+    child_stdin=input;
+    run(lsp,0); expect(err,"",0);
+    const Bytes response=read_bytes(out);
+    CHECK(lsp_frames(response)==3);
+    free(response.data);
+    contains(out,"\"positionEncoding\":\"utf-16\"");
+    contains(out,"textDocument/publishDiagnostics"); contains(out,"E302");
+    write_bytes(input,"Content-Length: -1\r\n\r\n",sizeof "Content-Length: -1\r\n\r\n"-1);
+    run(lsp,2); expect(out,"",0); contains(err,"editor protocol");
+    child_stdin=NULL;
+    printf("tooling CLI: canonical format/check, diagnosed syntax and framed editor transcript passed\n");
+}
+
 /* A real downstream failure after writing into the compiler's private stage. */
 static int fake_cc(int argc, char **argv) {
     const char *witness=getenv("TF_TEST_CC_WITNESS");
@@ -829,11 +902,14 @@ int main(int argc, char **argv) {
     library_rejections(argv[1],argv[2],argv[3],argc==5);
     stage_boundaries(argv[1],argv[0],argv[3]);
     reproducible_pipeline(argv[1],argv[2],argv[3],argc==5);
+    tooling_cli(argv[1]);
     current="cleanup";
     stage_library(true);
     CHECK(remove(out)==0); CHECK(remove(err)==0); CHECK(remove(input)==0);
     CHECK(REMOVE_DIR(work)==0);
     printf("differential: %zu execution cases, 4 build rejections, 2 alias checks and 3 library rejections passed\n",
            sizeof cases/sizeof *cases);
+    printf("tracing: %zu interpreter/native pairs, exact source maps and replay; R003 event counts remain engine-specific\n",
+           traced_execution_pairs);
     return 0;
 }

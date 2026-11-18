@@ -1,0 +1,14 @@
+// Existing two-cell machine expresses the flattened candidate barrier.
+machine Flat(delta: Int) yields Text rejects Text {
+    state a: Int = 0;
+    state z: Int = 0;
+    next a = delta;
+    next z = 9223372036854775807 + 1;
+    emit "private first";
+    emit int_text(1 div delta);
+}
+pub fn main() -> List[Text] {
+    output "staged";
+    let result = step(Flat(), 0);
+    ["unreachable"]
+}
