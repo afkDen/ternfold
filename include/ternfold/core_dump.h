@@ -12,7 +12,8 @@
  * backslash, LF, CR and tab escaped and all other nonprintable/non-ASCII
  * bytes written as \xHH (exactly two hex digits per byte, including NUL).
  *
- * The caller owns the writable binary stream and handles flush/close errors.
+ * The caller owns the writable byte-oriented or unoriented binary stream
+ * and handles flush/close errors.
  * An observed write error returns TF_HOST_ERROR and can leave a prefix.
  * No working storage is allocated by the renderer. */
 TfStatus tf_core_dump_write(FILE *stream, const TfVerifiedCore *verified);

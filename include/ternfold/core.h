@@ -204,7 +204,10 @@ typedef struct {
 } TfCoreBlock;
 
 typedef enum {
-    TF_CORE_FUNCTION_ORDINARY = 1, TF_CORE_FUNCTION_ENTRY_ONLY
+    TF_CORE_FUNCTION_ORDINARY = 1, TF_CORE_FUNCTION_ENTRY_ONLY,
+    /* Synthetic prelude adapter: one Builtin or generated step Call. Its
+     * operation inherits the invocation's effective origin at runtime. */
+    TF_CORE_FUNCTION_PRELUDE_WRAPPER
 } TfCoreFunctionKind;
 
 typedef struct {

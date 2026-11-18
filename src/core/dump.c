@@ -277,6 +277,7 @@ static bool function_lines(FILE *out, TfCoreFunctionId id, const TfCoreFunction 
     switch (fn->kind) {
     case TF_CORE_FUNCTION_ORDINARY: kind = "ordinary"; break;
     case TF_CORE_FUNCTION_ENTRY_ONLY: kind = "entry-only"; break;
+    case TF_CORE_FUNCTION_PRELUDE_WRAPPER: kind = "prelude-wrapper"; break;
     default: return false;
     }
     if (fprintf(out, "function f%zu %s name=", id, kind) < 0 || !quoted(out, fn->name) ||

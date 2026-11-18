@@ -22,6 +22,9 @@ TfCoreTypeId tf_core_lower_machine_id(const TfCoreLowerTypes *types, const TfMac
 TfStatus tf_core_lower_decision(TfCoreLowerTypes *types, TfCoreTypeId machine, TfCoreTypeId *out);
 TfStatus tf_core_lower_list(TfCoreLowerTypes *types, TfCoreTypeId element, TfCoreTypeId *out);
 TfStatus tf_core_lower_tag(TfCoreLowerTypes *types, TfCoreTypeId tagged, TfCoreTypeId *out);
+/* Bool is needed for synthesized literal-pattern tests even when no source
+ * expression has Bool type. Reuse the original ID if present. */
+TfStatus tf_core_lower_bool(TfCoreLowerTypes *types, TfCoreTypeId *out);
 /* Borrow validated display metadata or omit an invalid native path. Names
  * do not participate in nominal type identity. */
 TfCoreText tf_core_lower_module_name(const TfResolvedModule *module);

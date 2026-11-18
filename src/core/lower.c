@@ -1,5 +1,6 @@
 #include "ternfold/core_lower.h"
 #include "lower_constants.h"
+#include "lower_match.h"
 #include "../check_internal.h"
 #include "../internal.h"
 
@@ -404,20 +405,18 @@ static TfCoreFunctionId builtin_wrapper(Lower *l, const TfAstNode *n,
     TfCoreLet *body=array(l,1,sizeof *body);
     TfCoreBlock *block=array(l,1,sizeof *block);
     Wrapper *entry=array(l,1,sizeof *entry);
-    const TfCoreSpanId span=origin(l,n->span);
     const TfCoreFunctionId id=append_function(l);
     if (l->failed) return 0;
     for (size_t i=0; i<types.count; ++i) {
         args[i]=i+1;
-        params[i]=(TfCoreParameter){.value=args[i],.type=types.items[i],.span=span};
+        params[i]=(TfCoreParameter){.value=args[i],.type=types.items[i]};
     }
     op.operands=(TfCoreValueIds){args,types.count};
-    *body=(TfCoreLet){types.count+1,result,op,span};
-    *block=(TfCoreBlock){.span=span,.lets=body,.let_count=1,
-                         .terminator={TF_CORE_YIELD,body->value,span}};
-    l->functions[id-1]=(TfCoreFunction){.kind=TF_CORE_FUNCTION_ORDINARY,
+    *body=(TfCoreLet){types.count+1,result,op,0};
+    *block=(TfCoreBlock){.lets=body,.let_count=1,.terminator={TF_CORE_YIELD,body->value,0}};
+    l->functions[id-1]=(TfCoreFunction){.kind=TF_CORE_FUNCTION_PRELUDE_WRAPPER,
         .name={(const unsigned char *)"$prelude",sizeof "$prelude"-1},
-        .span=span,.parameters=params,.parameter_count=types.count,.result=result,
+        .parameters=params,.parameter_count=types.count,.result=result,
         .blocks=block,.block_count=1,.body=1,.value_count=body->value};
     *entry=(Wrapper){*chain,kind,id};
     *chain=entry;
@@ -593,6 +592,45 @@ static TfCoreValueId closure(Lower *l, TfCoreBlockId block, const TfAstNode *n, 
         .operands={args,count},.as.function=id},n->span);
 }
 
+static void *match_allocate(void *l, size_t count, size_t width) { return array(l,count,width); }
+static bool match_failed(const void *l) { return ((const Lower *)l)->failed; }
+static TfCoreValueId match_invariant(void *l, const TfAstNode *n) {
+    return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
+}
+static TfCoreBlockId match_block(void *l, TfSpan span) { return new_block(l,span); }
+static TfCoreValueId match_emit(void *l, TfCoreBlockId b, TfCoreTypeId type, TfCoreOperation op,
+                                TfSpan span) { return emit(l,b,type,op,span); }
+static TfCoreValueId match_constant(void *l, TfCoreBlockId b, TfCoreConstant k, TfSpan span) {
+    return emit_const(l,b,k,span);
+}
+static TfCoreValueId match_expression(void *l, TfCoreBlockId b, TfNodeId id) { return expression(l,b,id); }
+static void match_yield(void *l, TfCoreBlockId b, TfCoreValueId value, TfSpan span) { finish(l,b,value,span); }
+static void match_unreachable(void *context, TfCoreBlockId b, TfSpan span) {
+    Lower *l=context;
+    if (l->failed) return;
+    if (b==0 || b>l->block_count) { (void)fail_at(l,TF_CORE_LOWER_INVARIANT,NULL); return; }
+    l->blocks[b-1].block.terminator=(TfCoreTerminator){TF_CORE_UNREACHABLE,0,origin(l,span)};
+}
+static bool match_bind(void *l, TfNodeId id, TfCoreValueId value) { return binding(l,node(id),value); }
+static bool match_tag(void *context, TfNodeId id, size_t *out) {
+    Lower *l=context;
+    const TfResolvedSymbol *s=target(l,id);
+    if (s!=NULL && variant_tag(l,s,out)) return true;
+    (void)fail_at(l,TF_CORE_LOWER_INVARIANT,node(id));
+    return false;
+}
+static TfCoreValueId matching(Lower *l, TfCoreBlockId b, const TfAstNode *n, TfCoreTypeId type) {
+    const TfCoreValueId scrutinee=expression(l,b,n->as.matching.value);
+    if (l->failed) return 0;
+    const TfCoreMatchBuilder builder={.context=l,.typed=l->typed,.types=l->types,
+        .allocate=match_allocate,.failed=match_failed,.invariant=match_invariant,.block=match_block,
+        .emit=match_emit,.constant=match_constant,.expression=match_expression,.yield=match_yield,
+        .unreachable=match_unreachable,.bind=match_bind,.variant_tag=match_tag};
+    const TfCoreValueId result=tf_core_lower_match(&builder,b,n,type,scrutinee);
+    if (result==0) l->failed=true;
+    return result;
+}
+
 static TfCoreValueId expression(Lower *l, TfCoreBlockId b, TfNodeId id) {
     const TfAstNode *n=node(id);
     TfCoreValueId v=0;
@@ -618,6 +656,7 @@ static TfCoreValueId expression(Lower *l, TfCoreBlockId b, TfNodeId id) {
     case TF_AST_CALL: v=call(l,b,n,type); break;
     case TF_AST_FOR: v=comprehension(l,b,n,type); break;
     case TF_AST_CLOSURE: v=closure(l,b,n,type); break;
+    case TF_AST_MATCH: v=matching(l,b,n,type); break;
     case TF_AST_PROJECT: {
         const TfCoreValueId receiver=expression(l,b,n->as.project.base);
         const TfTypedNode *member=typed(l,n->id);

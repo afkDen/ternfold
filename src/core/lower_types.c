@@ -14,6 +14,7 @@ struct TfCoreLowerTypes {
     TfCoreType *types;
     TfSpan *spans;
     TypeIndex *indexes;
+    TfCoreTypeId boolean;
     size_t source_count, type_count, type_capacity, span_count, span_capacity;
     size_t indexed_count, index_capacity;
 };
@@ -152,6 +153,18 @@ TfStatus tf_core_lower_tag(TfCoreLowerTypes *t, TfCoreTypeId tagged, TfCoreTypeI
     if (!ensure_types(t,1)) return TF_HOST_ERROR;
     *out = push_type(t,(TfCoreType){.kind=TF_CORE_TYPE_TAG,.as.tagged=tagged});
     t->indexes[tagged-1].tag = *out;
+    return TF_OK;
+}
+
+TfStatus tf_core_lower_bool(TfCoreLowerTypes *t, TfCoreTypeId *out) {
+    if (out == NULL) return TF_HOST_ERROR;
+    *out = 0;
+    if (t == NULL) return TF_HOST_ERROR;
+    if (t->boolean == 0) {
+        if (!ensure_types(t,1)) return TF_HOST_ERROR;
+        t->boolean=push_type(t,(TfCoreType){.kind=TF_CORE_TYPE_BOOL});
+    }
+    *out=t->boolean;
     return TF_OK;
 }
 
@@ -305,6 +318,7 @@ TfStatus tf_core_lower_types_create(TfCoreLowerTypes **out, const TfMachineProgr
         const TfConcreteType *type = tf_type_store_at(t->source,i);
         t->types[i] = (TfCoreType){.kind=kind_of(type->kind)};
         if (t->types[i].kind == 0) goto fail;
+        if (type->kind == TF_CONCRETE_BOOL) t->boolean=i+1;
         if (type->kind == TF_CONCRETE_LIST || type->kind == TF_CONCRETE_OPTION) {
             t->types[i].as.element = tf_core_lower_type_id(t,type->as.element);
             if (t->types[i].as.element == 0) goto fail;

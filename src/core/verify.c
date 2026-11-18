@@ -489,6 +489,22 @@ static bool signatures(Verify *v) {
             if (entry == i + 1 && fn->parameter_count != 0)
                 return reject(v, TF_CORE_VERIFY_ENTRY);
             break;
+        case TF_CORE_FUNCTION_PRELUDE_WRAPPER: {
+            const TfCoreBlock *block = tf_core_block(fn, fn->body);
+            if (entry == i + 1 || fn->capture_count != 0 || fn->span != 0 ||
+                fn->block_count != 1 || block->span != 0 || block->let_count != 1 ||
+                block->lets[0].span != 0 || block->terminator.span != 0 ||
+                (block->lets[0].operation.kind != TF_CORE_OP_BUILTIN &&
+                 block->lets[0].operation.kind != TF_CORE_OP_CALL) ||
+                block->terminator.kind != TF_CORE_YIELD || block->terminator.value != block->lets[0].value)
+                return reject(v, TF_CORE_VERIFY_FUNCTION);
+            const TfCoreValueIds operands = block->lets[0].operation.operands;
+            if (operands.count != fn->parameter_count) return reject(v, TF_CORE_VERIFY_FUNCTION);
+            for (size_t j = 0; j < fn->parameter_count; ++j)
+                if (fn->parameters[j].span != 0 || operands.items[j] != fn->parameters[j].value)
+                    return reject(v, TF_CORE_VERIFY_FUNCTION);
+            break;
+        }
         default: return reject(v, TF_CORE_VERIFY_FUNCTION);
         }
         if (entry == i + 1 && (fn->capture_count != 0 ||
@@ -804,7 +820,8 @@ static bool operation(Body *b, BlockFrame *frame, const TfCoreLet *let) {
         break;
     case TF_CORE_OP_CLOSURE:
         fn = tf_core_function(v->data, op->as.function);
-        if (fn == NULL || fn->kind != TF_CORE_FUNCTION_ORDINARY ||
+        if (fn == NULL || (fn->kind != TF_CORE_FUNCTION_ORDINARY &&
+                           fn->kind != TF_CORE_FUNCTION_PRELUDE_WRAPPER) ||
             r->kind != TF_CORE_TYPE_FUNCTION || fn->result != r->as.function.result ||
             fn->parameter_count != r->as.function.parameters.count ||
             !parameter_args(b, args, fn->captures, fn->capture_count)) break;
