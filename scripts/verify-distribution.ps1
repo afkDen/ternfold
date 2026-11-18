@@ -10,6 +10,7 @@ if ($LASTEXITCODE -ne 0 -or -not $tree.Count) { throw 'Cannot read the tagged tr
 $denied = @($tree | Where-Object {
     (($_ -notmatch '/' -and $_ -cnotin $roots) -or
      ($_ -match '/' -and ($_ -split '/',2)[0] -cnotin $directories)) -or
+    ($_ -match '/' -and ($_ -replace '^\.github/','') -match '(^|/)\.') -or
     $_ -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
     $_ -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$'
 })
