@@ -65,19 +65,31 @@ static bool whitespace(unsigned char c) { return c == ' ' || c == '\t' || c == '
 
 /* Decimal states: start, zero, integer, dot, fraction, exponent,
  * exponent-sign, exponent-digits, invalid sink. Numeric recovery continues
- * through letters/digits, digit-followed dots, and signs immediately after e/E.
- * This preserves punctuation/comment boundaries even in the invalid sink. */
-typedef enum { N_START, N_ZERO, N_INT, N_DOT, N_FRAC, N_EXP, N_SIGN, N_DIGITS, N_BAD } NumberState;
+ * through letters/digits and digit-followed dots. A sign joins only at the
+ * first exponent's sign position, even for a decimal with leading zeros.
+ * Separate nonaccepting leading-zero states retain that position without
+ * reviving the general invalid sink or consuming suffix operators. */
+typedef enum {
+    N_START, N_ZERO, N_INT, N_DOT, N_FRAC, N_EXP, N_SIGN, N_DIGITS, N_BAD,
+    N_BAD_INT, N_BAD_DOT, N_BAD_FRAC, N_BAD_EXP
+} NumberState;
 static NumberState number_step(NumberState state, unsigned char c) {
     switch (state) {
         case N_START: return c == '0' ? N_ZERO : digit(c) ? N_INT : N_BAD;
-        case N_ZERO: return c == '.' ? N_DOT : (c == 'e' || c == 'E') ? N_EXP : N_BAD;
+        case N_ZERO: return digit(c) ? N_BAD_INT : c == '.' ? N_DOT :
+                            (c == 'e' || c == 'E') ? N_EXP : N_BAD;
         case N_INT: return digit(c) ? N_INT : c == '.' ? N_DOT :
                            (c == 'e' || c == 'E') ? N_EXP : N_BAD;
         case N_DOT: return digit(c) ? N_FRAC : N_BAD;
         case N_FRAC: return digit(c) ? N_FRAC : (c == 'e' || c == 'E') ? N_EXP : N_BAD;
         case N_EXP: return digit(c) ? N_DIGITS : (c == '+' || c == '-') ? N_SIGN : N_BAD;
         case N_SIGN: case N_DIGITS: return digit(c) ? N_DIGITS : N_BAD;
+        case N_BAD_INT: return digit(c) ? N_BAD_INT : c == '.' ? N_BAD_DOT :
+                               (c == 'e' || c == 'E') ? N_BAD_EXP : N_BAD;
+        case N_BAD_DOT: return digit(c) ? N_BAD_FRAC : N_BAD;
+        case N_BAD_FRAC: return digit(c) ? N_BAD_FRAC :
+                                (c == 'e' || c == 'E') ? N_BAD_EXP : N_BAD;
+        case N_BAD_EXP: return N_BAD;
         case N_BAD: return N_BAD;
     }
     return N_BAD;
@@ -365,7 +377,7 @@ TfStatus tf_lex_trace(TfLexResult *out, const TfSource *source, size_t diagnosti
                 unsigned char c = source->bytes[at];
                 if (letter(c) || digit(c) ||
                     (c == '.' && source->length - at >= 2 && digit(source->bytes[at + 1])) ||
-                    ((c == '+' || c == '-') && (source->bytes[at - 1] == 'e' || source->bytes[at - 1] == 'E'))) {
+                    ((c == '+' || c == '-') && (state == N_EXP || state == N_BAD_EXP))) {
                     NumberState previous = state;
                     state = number_step(state, c);
                     trace_step(&trace, family, source, at, at + 1, (size_t)previous, (size_t)state, number_accept(state));
