@@ -31,14 +31,11 @@ void tf_emit_test_free(void *p) {
     if (tracking && p!=NULL) { CHECK(live!=0); --live; }
     free(p);
 }
-static void allocation_failures(const TfVerifiedCore *program) {
-    static bool tested;
-    if (tested) return;
-    tested=true;
+static void allocation_failures(const TfVerifiedCore *program,TfCoreOptLevel level) {
     FILE *stream=tmpfile();
     CHECK(stream!=NULL);
     tracking=true; allocations=0; failed_allocation=0;
-    const TfStatus status=tf_c_emit(stream,program);
+    const TfStatus status=tf_c_emit_optimized(stream,program,level);
     tracking=false;
     CHECK(status==TF_OK && live==0 && fclose(stream)==0);
     const size_t count=allocations;
@@ -46,11 +43,11 @@ static void allocation_failures(const TfVerifiedCore *program) {
     for (size_t i=1;i<=count;++i) {
         stream=tmpfile(); CHECK(stream!=NULL);
         tracking=true; allocations=0; failed_allocation=i;
-        const TfStatus failed=tf_c_emit(stream,program);
+        const TfStatus failed=tf_c_emit_optimized(stream,program,level);
         tracking=false;
         CHECK(failed==TF_HOST_ERROR && live==0 && fclose(stream)==0);
     }
-    printf("C17 emission: %zu injected allocation failures\n",count);
+    printf("C17 emission level %d: %zu injected allocation failures\n",(int)level,count);
 }
 #endif
 
@@ -73,7 +70,12 @@ static void emit(const char *source, FILE *out) {
     tf_machine_program_destroy(machines); tf_typed_program_destroy(typed);
     tf_signatures_destroy(signatures); tf_resolution_destroy(resolution);
 #ifdef TF_TEST_EMIT_ALLOC
-    allocation_failures(verified);
+    static bool tested;
+    if (!tested) {
+        tested=true;
+        allocation_failures(verified,TF_CORE_OPT_LEVEL_0);
+        allocation_failures(verified,TF_CORE_OPT_LEVEL_1);
+    }
 #endif
     CHECK(tf_c_emit(out,verified)==TF_OK && fflush(out)==0);
     tf_verified_core_destroy(verified); tf_core_program_destroy(core); tf_source_manager_destroy(manager);

@@ -139,6 +139,133 @@ static void transcript(void) {
     CHECK(publishes == 3); /* opening, current version, close; no stale revision */
     free(s); CHECK(fclose(in) == 0 && fclose(out) == 0);
 }
+static void reviewed_protocol_regressions(void) {
+    FILE *in=tmpfile(),*out=tmpfile(); CHECK(in && out);
+    frame(in,"{\r\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}");
+    char type[256]="Int", next[256], source[768], message[2048];
+    for (size_t i=0;i<40;++i) {
+        CHECK(snprintf(next,sizeof next,"List[%s]",type)>0);
+        CHECK(strlen(next)<sizeof type); strcpy(type,next);
+    }
+    CHECK(snprintf(source,sizeof source,"fn f(x: %s) -> %s { x }",type,type)>0);
+    CHECK(snprintf(message,sizeof message,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{"
+        "\"uri\":\"file:///deep.tfd\",\"version\":-2,\"text\":\"%s\"}}}",source)>0);
+    frame(in,message);
+    CHECK(snprintf(message,sizeof message,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"file:///deep.tfd\"},\"position\":{\"line\":0,\"character\":%zu}}}",
+        strlen(source)-3)>0);
+    frame(in,message);
+    frame(in,"{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"file:///deep.tfd\",\"version\":-1},"
+        "\"contentChanges\":[{\"text\":\"fn f()->Int{true}\"},{\"text\":\"fn f()->Int{9}\"}]}}");
+    frame(in,"{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":\"a\"}}");
+    frame(in,"{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":\"b\"}}");
+    frame(in,"{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"textDocument/hover\",\"params\":{}}");
+    frame(in,"{\"jsonrpc\":\"2.0\",\"id\":\"b\",\"method\":\"textDocument/hover\",\"params\":{}}");
+    frame(in,"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/hover\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"file:///deep.tfd\"},\"position\":{\"line\":0,\"character\":12}}}");
+    rewind(in); CHECK(tf_editor_serve(in,out,".",NULL)==TF_OK);
+    char *result=read_all(out);
+    CHECK(strstr(result,"\"version\":-2,\"diagnostics\":[]"));
+    CHECK(strstr(result,"\"version\":-1,\"diagnostics\":[]"));
+    CHECK(strstr(result,"...") && strstr(result,"\"id\":5,\"result\":"));
+    CHECK(strstr(result,"\"value\":\"Int\""));
+    CHECK(strstr(result,"\"id\":\"a\",\"error\":{\"code\":-32800"));
+    CHECK(strstr(result,"\"id\":\"b\",\"error\":{\"code\":-32800"));
+    CHECK(!strstr(result,"-32700"));
+    free(result); CHECK(fclose(in)==0 && fclose(out)==0);
+}
+static void wide_hover_budget(void) {
+    FILE *in=tmpfile(), *out=tmpfile(); CHECK(in && out);
+    char type[4352]="", source[9000], message[9600];
+    size_t n=0;
+    for (size_t i=0;i<32;++i) { memcpy(type+n,"List[",5); n+=5; }
+    memcpy(type+n,"fn(",3); n+=3;
+    for (size_t i=0;i<999;++i) { memcpy(type+n,"Int,",4); n+=4; }
+    memcpy(type+n,"Int)->Int",9); n+=9;
+    memset(type+n,']',32); type[n+32]=0;
+    const int length=snprintf(source,sizeof source,"fn f(x:%s)->%s{x}",type,type);
+    CHECK(length>2 && (size_t)length<sizeof source);
+    frame(in,"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}");
+    const int size=snprintf(message,sizeof message,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{"
+        "\"uri\":\"file:///wide.tfd\",\"version\":1,\"text\":\"%s\"}}}",source);
+    CHECK(size>0 && (size_t)size<sizeof message);
+    frame(in,message);
+    for (int i=2;i<=3;++i) {
+        const int request=snprintf(message,sizeof message,
+            "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"textDocument/hover\",\"params\":{"
+            "\"textDocument\":{\"uri\":\"file:///wide.tfd\"},\"position\":{\"line\":0,\"character\":%d}}}",i,length-2);
+        CHECK(request>0 && (size_t)request<sizeof message);
+        frame(in,message);
+    }
+    rewind(in); CHECK(tf_editor_serve(in,out,".",NULL)==TF_OK);
+    char *result=read_all(out);
+    CHECK(strstr(result,"\"version\":1,\"diagnostics\":[]"));
+    const char *first=strstr(result,"\"id\":2,\"result\":{\"contents\":");
+    const char *second=strstr(result,"\"id\":3,\"result\":{\"contents\":");
+    CHECK(first && second && first<second);
+    const char *value=strstr(first,"\"value\":\"");
+    CHECK(value && value<second); value+=sizeof "\"value\":\""-1;
+    const char *end=strchr(value,'\"');
+    CHECK(end && end<second && (size_t)(end-value)<1024);
+    CHECK(strstr(value,"...") && strstr(value,"...")<end);
+    free(result); CHECK(fclose(in)==0 && fclose(out)==0);
+}
+static void padded(FILE *file,size_t length) {
+    static const char declaration[]="pub fn value()->Int{1}\n";
+    CHECK(length>=sizeof declaration-1);
+    CHECK(fwrite(declaration,1,sizeof declaration-1,file)==sizeof declaration-1);
+    for (size_t i=sizeof declaration-1;i<length;++i) CHECK(fputc(' ',file)!=EOF);
+    CHECK(fclose(file)==0);
+}
+static void dependency_limits(void) {
+    char path[128],path2[128],code[512]; FILE *file=NULL;
+    for (unsigned i=0;i<64 && !file;++i) {
+        CHECK(snprintf(path,sizeof path,"build/editor-budget-%u.tfd",i)>0);
+        file=fopen(path,"wbx");
+    }
+    CHECK(file);
+    CHECK(snprintf(code,sizeof code,"import \"%s\" as b; fn f()->Int{b::value()}",path)>0);
+    const size_t near=1048576-strlen(code);
+    padded(file,near);
+    Fault state={0,SIZE_MAX,0}; TfAllocator allocator={&state,allocate,deallocate};
+    TfEditorSnapshot *old=NULL,*next=NULL;
+    CHECK(tf_editor_snapshot_create(&old,"budget",code,strlen(code),-3,".",&allocator)==TF_OK);
+    CHECK(!tf_diagnostic_bag_has_errors(tf_editor_diagnostics(old,-3)));
+    file=fopen(path,"wb"); CHECK(file); padded(file,near+1);
+    CHECK(tf_editor_snapshot_create(&next,"budget",code,strlen(code),-2,".",&allocator)==TF_HOST_ERROR);
+    CHECK(!next && tf_editor_diagnostics(old,-3));
+    file=fopen(path,"wb"); CHECK(file); padded(file,600000);
+    CHECK(snprintf(path2,sizeof path2,"%s.second.tfd",path)>0);
+    file=fopen(path2,"wbx"); CHECK(file); padded(file,600000);
+    CHECK(snprintf(code,sizeof code,"import \"%s\" as b; import \"%s\" as c;"
+                   "fn f()->Int{b::value()+c::value()}",path,path2)>0);
+    CHECK(tf_editor_snapshot_create(&next,"budget",code,strlen(code),-1,".",&allocator)==TF_HOST_ERROR);
+    CHECK(!next && tf_editor_diagnostics(old,-3));
+    tf_editor_snapshot_destroy(old); CHECK(state.live==0);
+
+    file=fopen(path,"wb"); CHECK(file);
+    CHECK(fputs("\n\npub fn value()->Int{true}\n",file)>=0 && fclose(file)==0);
+    CHECK(snprintf(code,sizeof code,"import \\\"%s\\\" as b; fn f()->Int{b::value()}",path)>0);
+    FILE *in=tmpfile(),*out=tmpfile(); CHECK(in && out);
+    frame(in,"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}");
+    char message[2048];
+    CHECK(snprintf(message,sizeof message,"{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\","
+        "\"params\":{\"textDocument\":{\"uri\":\"file:///imports.tfd\",\"version\":1,\"text\":\"%s\"}}}",code)>0);
+    frame(in,message);
+    frame(in,"{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didClose\","
+        "\"params\":{\"textDocument\":{\"uri\":\"file:///imports.tfd\"}}}");
+    rewind(in); CHECK(tf_editor_serve(in,out,".",NULL)==TF_OK);
+    char *result=read_all(out);
+    CHECK(strstr(result,"E302") && strstr(result,"\"line\":2"));
+    CHECK(strstr(result,"editor-budget-") && strstr(result,"\"uri\":\"file:///"));
+    CHECK(strstr(result,"\"uri\":\"file:///imports.tfd\",\"version\":1,\"diagnostics\":[]"));
+    free(result); CHECK(fclose(in)==0 && fclose(out)==0);
+    CHECK(remove(path)==0 && remove(path2)==0);
+}
 static void malformed(void) {
     static const char *const jsons[] = {
         "{", "[]", "{\"jsonrpc\":\"2.0\",\"id\":1,\"id\":2}",
@@ -171,7 +298,8 @@ static void malformed(void) {
     }
 }
 int main(void) {
-    coordinates(); snapshots(); transcript(); malformed(); protocol_allocations();
+    coordinates(); snapshots(); transcript(); reviewed_protocol_regressions();
+    wide_hover_budget(); dependency_limits(); malformed(); protocol_allocations();
     printf("PASS editor: %zu checks\n", checks);
     return 0;
 }

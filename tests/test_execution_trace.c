@@ -362,6 +362,6 @@ int main(void) {
     loss_saturation();
     id_exhaustion();
     independent_recorders();
-    (void)printf("execution trace recorder: %u checks passed (partial M15; no executor hooks)\n", checks);
+    (void)printf("standalone execution trace recorder: %u checks passed\n", checks);
     return EXIT_SUCCESS;
 }

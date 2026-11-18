@@ -1,9 +1,34 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "ternfold/core_lower.h"
 #include "ternfold/interpreter.h"
 #include "../src/repl_resolve.h"
 #include "../src/typed_signatures.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#define FD _fileno
+#define DUP _dup
+#define DUP2 _dup2
+#define CLOSE _close
+#else
+#include <unistd.h>
+#define FD fileno
+#define DUP dup
+#define DUP2 dup2
+#define CLOSE close
+#endif
+
+static size_t failed_trace_allocations;
+static void *fail_trace_calloc(size_t count,size_t width) {
+    (void)count; (void)width; ++failed_trace_allocations; return NULL;
+}
+/* Affect only the host trace-buffer allocation, not the compiler/VM allocator. */
+#define calloc fail_trace_calloc
+#include "../src/execution/driver_run.c"
+#undef calloc
 
 static size_t checks;
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr,"trace execution:%d: %s\n",__LINE__,#x); exit(1); } } while (0)
@@ -170,6 +195,50 @@ static void nesting(void) {
     CHECK(records[5].event.kind==TF_TRACE_WRITER && records[5].event.invocation_id==1);
     destroy(&p);
 }
+static char *capture(FILE *stream) {
+    CHECK(fflush(stream)==0 && fseek(stream,0,SEEK_END)==0);
+    const long count=ftell(stream);
+    CHECK(count>=0 && count<65536 && fseek(stream,0,SEEK_SET)==0);
+    char *bytes=malloc((size_t)count+1); CHECK(bytes);
+    CHECK(fread(bytes,1,(size_t)count,stream)==(size_t)count);
+    bytes[count]=0; return bytes;
+}
+static void trace_allocation_noninterference(void) {
+    const char *sources[]={
+        "pub fn main() -> List[Text] { [int_text(2 ^ 3)] }",
+        "pub fn main() -> List[Text] { let n = 1 div 0; [int_text(n)] }"
+    };
+    for (size_t i=0;i<2;++i) {
+        Program p; prepare(&p,sources[i]);
+        char *plain_out=NULL,*plain_err=NULL;
+        for (unsigned traced=0;traced<2;++traced) {
+            FILE *output=tmpfile(),*errors=tmpfile(); CHECK(output && errors);
+            CHECK(fflush(stdout)==0 && fflush(stderr)==0);
+            const int saved_out=DUP(FD(stdout)),saved_err=DUP(FD(stderr));
+            CHECK(saved_out>=0 && saved_err>=0);
+            CHECK(DUP2(FD(output),FD(stdout))>=0 && DUP2(FD(errors),FD(stderr))>=0);
+            const char *failure=NULL;
+            const int code=tf_run_verified_traced(p.verified,tf_typed_program_diagnostics(p.typed),
+                NULL,TF_DIAG_TEXT,&failure,traced ? "build/unused-allocation.trace" : NULL);
+            const bool flushed=fflush(stdout)==0 && fflush(stderr)==0;
+            CHECK(DUP2(saved_out,FD(stdout))>=0 && DUP2(saved_err,FD(stderr))>=0);
+            CHECK(CLOSE(saved_out)==0 && CLOSE(saved_err)==0 && flushed);
+            char *out=capture(output),*err=capture(errors);
+            if (!traced) {
+                CHECK(code==(i ? 3 : 0) && !failure);
+                plain_out=out; plain_err=err;
+            } else {
+                CHECK(code==2 && failure && strstr(failure,"trace"));
+                CHECK(strcmp(out,plain_out)==0 && strcmp(err,plain_err)==0);
+                CHECK(i ? strstr(err,"R002")!=NULL : strcmp(out,"8\n")==0);
+                free(out); free(err); free(plain_out); free(plain_err);
+            }
+            CHECK(fclose(output)==0 && fclose(errors)==0);
+        }
+        destroy(&p);
+    }
+    CHECK(failed_trace_allocations==2);
+}
 int main(void) {
     static const TfTraceEventKind accepted[]={TF_TRACE_STEP_BEGIN,TF_TRACE_WRITER,TF_TRACE_WRITER,TF_TRACE_GUARD,TF_TRACE_EMISSION,TF_TRACE_ACCEPT};
     static const TfTraceEventKind rejected[]={TF_TRACE_STEP_BEGIN,TF_TRACE_WRITER,TF_TRACE_WRITER,TF_TRACE_GUARD,TF_TRACE_REJECT};
@@ -184,7 +253,7 @@ int main(void) {
     scenario(writers," guard divide(d) > 0 else \"negative\";"," emit next.b;",3,guard,4,TF_SOURCE_ERROR);
     scenario(writers," guard false else int_text(divide(d));"," emit next.b;",3,reason,5,TF_SOURCE_ERROR);
     scenario(writers," guard true else \"negative\";"," emit next.b; emit divide(d);",3,emission,6,TF_SOURCE_ERROR);
-    nesting(); metadata();
+    nesting(); metadata(); trace_allocation_noninterference();
     printf("trace execution: %zu assertions; ordered events, exact faults, truncation, budgets and malformed metadata passed\n",checks);
     return 0;
 }

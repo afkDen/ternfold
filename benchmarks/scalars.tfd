@@ -1,0 +1,5 @@
+pub fn main() -> List[Text] {
+    let a = (6 * 7) + (10 - 10);
+    [int_text(a), int_text(-7 div 3), int_text(-7 % 3), float_text(5 / 2),
+     bool_text('T' == 'T' && true && !(2 > 3))]
+}

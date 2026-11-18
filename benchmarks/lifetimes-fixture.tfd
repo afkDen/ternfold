@@ -1,0 +1,17 @@
+machine Observe(delta: Int) yields Text rejects Unit {
+    state x: Int = 1;
+    next x = x + delta;
+    emit int_text(next.x);
+}
+fn branch(x: Bool) -> Int { if x { 1 } else { 2 } }
+fn mapped() -> List[Int] { for x in range(0, 2) { x + 1 } }
+fn builtin_map() -> List[Int] { map(range(0, 2), fn (x: Int) -> Int { x + 1 }) }
+fn builtin_fold() -> Int { fold(range(0, 2), 0, fn (a: Int, b: Int) -> Int { a + b }) }
+fn capture(prefix: Text) -> fn(Text) -> Text {
+    fn (tail: Text) -> Text { prefix ++ tail }
+}
+pub fn main() -> List[Text] {
+    let join = capture("owned");
+    let text = join(" across resumption");
+    [text, int_text(branch(true))]
+}
