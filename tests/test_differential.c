@@ -609,6 +609,99 @@ static void library_rejections(const char *compiler,const char *cc,const char *r
     }
 }
 
+/* Probe actual stopping points. A later command must reject the same source
+ * without exposing a partial dump, result, or output file. */
+static void stage_boundaries(const char *compiler,const char *cc,const char *root) {
+    static const struct { const char *input, *code, *earlier; } rows[]={
+        {"pub fn main() -> List[Text] { [@] }","E101",NULL},
+        {"pub fn main() -> List[Text] { [\"x\" }","E110","tokens"},
+        {"pub fn main() -> List[Text] { [missing] }","E203","ast"},
+        {"pub fn main() -> List[Text] { [true] }","E302","ast"}
+    };
+    static const char *const later[]={"check","plan","core","run","emit-c","build"};
+    char source[PATH_CAP];
+    join(source,work,"boundary.tfd");
+    for (size_t i=0;i<=sizeof rows/sizeof *rows;++i) {
+        const bool cycle=i==sizeof rows/sizeof *rows;
+        const char *code=cycle ? "E404" : rows[i].code;
+        current=code;
+        const char *file=cycle ? "examples/invalid/candidate_cycle.tfd" : source;
+        const char *module_root=cycle ? "examples" : work;
+        if (!cycle) write_bytes(source,rows[i].input,strlen(rows[i].input));
+        const char *earlier=cycle ? "ast" : rows[i].earlier;
+        if (earlier) {
+            const char *args[]={compiler,earlier,file,"--diagnostics-json",NULL};
+            run(args,0);
+            const Bytes dump=read_bytes(out);
+            CHECK(dump.length>0);
+            free(dump.data); expect(err,LF_OK,sizeof LF_OK-1);
+        }
+        char key[32];
+        const int length=snprintf(key,sizeof key,"\"code\":\"%s\"",code);
+        CHECK(length>0 && (size_t)length<sizeof key);
+        for (size_t j=0;j<sizeof later/sizeof *later;++j) {
+            const bool native_build=strcmp(later[j],"build")==0;
+            const char *args[]={compiler,later[j],file,"--root",module_root,"--diagnostics-json",
+                                native_build ? "-o" : NULL,native_build ? native : NULL,
+                                "--cc",cc,"--runtime-root",root,NULL};
+            run(args,1); expect(out,"",0); contains(err,key); absent(native);
+        }
+    }
+    CHECK(remove(source)==0);
+    printf("stage boundaries: 5 diagnostic classes, 30 blocked later commands\n");
+}
+
+static void perturb_environment(unsigned attempt) {
+    const char *locale=attempt==1 ? "C" : "POSIX";
+    const char *zone=attempt==1 ? "UTC0" : "EST5";
+    /* On libc implementations that support it, alter fresh/freed heap fill
+     * bytes. Child processes allocate independently even without this knob. */
+    const char *heap=attempt==1 ? "19" : "187";
+#ifdef _WIN32
+    CHECK(SetEnvironmentVariableA("LC_ALL",locale)!=0);
+    CHECK(SetEnvironmentVariableA("TZ",zone)!=0);
+    CHECK(SetEnvironmentVariableA("MALLOC_PERTURB_",heap)!=0);
+#else
+    CHECK(setenv("LC_ALL",locale,1)==0);
+    CHECK(setenv("TZ",zone,1)==0);
+    CHECK(setenv("MALLOC_PERTURB_",heap,1)==0);
+#endif
+}
+
+static void reproducible_pipeline(const char *compiler,const char *cc,
+                                  const char *root,bool sanitize) {
+    static const char *const stages[]={"tokens","ast","plan","core","emit-c"};
+    static const char source[]="examples/course/precedence_bindings.tfd";
+    static const char expected[]="8\n";
+    for (size_t i=0;i<sizeof stages/sizeof *stages;++i) {
+        current=stages[i];
+        const bool tokens=i==0, ast=i==1;
+        const char *args[]={compiler,current,source,"--diagnostics-json",
+                            tokens || ast ? "--json" : "--root",tokens || ast ? NULL : "examples",NULL};
+        perturb_environment(1);
+        run(args,0); expect(err,LF_OK,sizeof LF_OK-1);
+        const Bytes baseline=read_bytes(out); CHECK(baseline.length!=0);
+        perturb_environment(2);
+        run(args,0); expect(err,LF_OK,sizeof LF_OK-1);
+        expect(out,baseline.data,baseline.length);
+        free(baseline.data);
+    }
+    current="repeat native build in independent private stages";
+    char entry[PATH_CAP];
+    join(entry,work,"repeat.tfd");
+    static const char program[]="pub fn main() -> List[Text] { [int_text(2 ^ 3)] }\n";
+    write_bytes(entry,program,sizeof program-1);
+    for (unsigned i=1;i<=2;++i) {
+        perturb_environment(i);
+        build(compiler,cc,root,entry,work,sanitize,0); expect(err,"",0);
+        const char *args[]={native,NULL};
+        run(args,0); expect(out,expected,sizeof expected-1); expect(err,"",0);
+        remove_native();
+    }
+    CHECK(remove(entry)==0);
+    printf("determinism: 5 byte-identical dumps and 2 independently built native runs\n");
+}
+
 /* A real downstream failure after writing into the compiler's private stage. */
 static int fake_cc(int argc, char **argv) {
     for (int i=2;i+1<argc;++i) {
@@ -636,6 +729,8 @@ int main(int argc, char **argv) {
     bad_builds(argv[1],argv[2],argv[3],argv[0],argc==5);
     source_alias(argv[1],argv[2],argv[3],argc==5);
     library_rejections(argv[1],argv[2],argv[3],argc==5);
+    stage_boundaries(argv[1],argv[2],argv[3]);
+    reproducible_pipeline(argv[1],argv[2],argv[3],argc==5);
     current="cleanup";
     stage_library(true);
     CHECK(remove(out)==0); CHECK(remove(err)==0); CHECK(remove(input)==0);

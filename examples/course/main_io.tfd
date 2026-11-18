@@ -1,4 +1,4 @@
-// Revision 2 showcase: intentionally pending implementation until M09/M11.
+// Entry I/O without optional readability words.
 /* Two input/output clauses are deterministic, staged only after successful evaluation. */
 fn square(x: Int) -> Int { x ^ 2 }
 fn polynomial(x: Int) -> Int { 2 * (x ^ 2) + 3 * x - 1 }
