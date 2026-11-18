@@ -1,7 +1,4 @@
 #include "ternfold/plan_dump.h"
-#include "internal.h"
-
-#include <string.h>
 
 static const char *context_name(TfMachineReadContext context) {
     switch (context) {
@@ -35,25 +32,16 @@ static bool name_json(FILE *f, TfAstText name) {
 
 static bool path_json(FILE *f, const char *path) {
     const unsigned char *bytes = (const unsigned char *)path;
-    const size_t length = strlen(path);
     if (fputc('"',f) == EOF) return false;
-    for (size_t i=0; i<length;) {
-        uint32_t scalar;
-        size_t end;
+    /* Map each native byte to one Unicode code point. Interpreting only the
+     * valid UTF-8 subsequences would collapse distinct native paths. */
+    for (size_t i=0; bytes[i] != 0; ++i) {
         unsigned char c = bytes[i];
         if (c == '"' || c == '\\') {
             if (fputc('\\',f) == EOF || fputc(c,f) == EOF) return false;
-            ++i;
-        } else if (c<32 || c==127) {
+        } else if (c<32 || c>=127) {
             if (fprintf(f,"\\u%04x",(unsigned)c)<0) return false;
-            ++i;
-        } else if (tf_decode(bytes,length,i,&scalar,&end)) {
-            if (fwrite(bytes+i,1,end-i,f) != end-i) return false;
-            i = end;
-        } else {
-            if (fprintf(f,"\\u%04x",(unsigned)c)<0) return false;
-            ++i;
-        }
+        } else if (fputc(c,f) == EOF) return false;
     }
     return fputc('"',f) != EOF;
 }

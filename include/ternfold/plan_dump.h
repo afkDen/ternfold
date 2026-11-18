@@ -7,7 +7,8 @@
  * are stable source identities, not host addresses. Names are ASCII source
  * identifiers. JSON v1 emits machines in program order; cell IDs are
  * zero-based and node IDs are module-local. Byte spans are half-open.
- * Includes modules' canonical source paths, cell and writer identities,
+ * Includes modules' canonical source paths (one JSON code point per native
+ * path byte, U+0000..U+00FF), cell and writer identities,
  * schedules, dependency occurrence indexes, lexical read contexts and
  * source-ordered guard/rejection/emission expressions.
  * Refuses an erroneous program before writing. Caller owns the binary

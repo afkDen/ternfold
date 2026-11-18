@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
                   "       ternfold check source.tfd [--root DIR] [--diagnostics-json]\n"
                   "       ternfold plan source.tfd [--root DIR] [--json] [--diagnostics-json]\n"
                   "Check validates the frontend, including machine scheduling; run/compile are unavailable.\n"
-                  "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
+                  "--json: tokens, AST or plan schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
                   "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
                   "Paths follow native SourceManager capabilities (Windows ANSI, queryable insensitive ancestors).\n"
