@@ -16,6 +16,8 @@
 #include "backend/driver_native.h"
 #include "repl.h"
 #include "ternfold/trace_artifact.h"
+#include "ternfold/format.h"
+#include "ternfold/editor.h"
 
 #include <signal.h>
 #include <string.h>
@@ -35,6 +37,47 @@ static int driver_error(const char *message, int code) {
 static bool extension(const char *path) {
     size_t length = strlen(path);
     return length >= 4 && strcmp(path+length-4,".tfd") == 0;
+}
+
+static int format_source(const char *path,bool check) {
+    TfSourceManager *manager=NULL; const TfManagedSource *entry=NULL;
+    TfFormatResult formatted={0}; TfLexResult lex={0}; TfParseResult *parse=NULL;
+    TfDiagnosticBag *bag=NULL;
+    const char *failure=NULL;
+    int status=2;
+    if (!extension(path)) return driver_error("source file extension must be exactly .tfd",1);
+    if (tf_source_manager_create(&manager,NULL)!=TF_OK) { failure="cannot allocate formatter source manager"; goto done; }
+    const TfStatus loaded=tf_source_manager_load(manager,path,&entry);
+    if (loaded==TF_HOST_ERROR) { failure="cannot load formatter source"; goto done; }
+    if (loaded==TF_SOURCE_ERROR) {
+        if (tf_diagnostic_bag_create(&bag,100,NULL)!=TF_OK ||
+            tf_diagnostic_bag_source(bag,entry->source)!=TF_OK ||
+            tf_diagnostic_bag_write(stderr,bag,TF_DIAG_TEXT,TF_DIAG_COLOR_NEVER)!=TF_OK) {
+            failure="cannot write source diagnostic"; goto done;
+        }
+        status=1; goto done;
+    }
+    const TfStatus result=tf_format(&formatted,entry->source,NULL,NULL);
+    if (result==TF_SOURCE_ERROR) {
+        if (tf_lex(&lex,entry->source,100,NULL)!=TF_OK || tf_parse(&parse,&lex,NULL,NULL)!=TF_OK ||
+            tf_diagnostic_bag_write(stderr,tf_parse_diagnostics(parse),TF_DIAG_TEXT,TF_DIAG_COLOR_NEVER)!=TF_OK) {
+            failure="cannot render formatting diagnostic"; goto done;
+        }
+        status=1;
+    } else if (result!=TF_OK) failure="cannot format source (allocation or parser resource limit)";
+    else if (check) {
+        status=formatted.length==entry->source->length &&
+               memcmp(formatted.bytes,entry->source->bytes,formatted.length)==0 ? 0 : 1;
+        if (status && fputs("ternfold: source differs from canonical formatting\n",stderr)==EOF)
+            failure="cannot write formatting check result";
+    } else if (fwrite(formatted.bytes,1,formatted.length,stdout)!=formatted.length || fflush(stdout)!=0)
+        failure="cannot write formatted source";
+    else status=0;
+done:
+    tf_format_destroy(&formatted); tf_parse_destroy(parse); tf_lex_destroy(&lex);
+    tf_diagnostic_bag_destroy(bag); tf_source_manager_destroy(manager);
+    if (fflush(stderr)!=0) failure="cannot flush formatting diagnostics";
+    return failure ? driver_error(failure,2) : status;
 }
 typedef enum { INSPECT_CHECK, INSPECT_PLAN, INSPECT_CORE, EXECUTE_RUN, EMIT_C, BUILD_NATIVE } DriverMode;
 
@@ -160,6 +203,8 @@ int main(int argc, char **argv) {
                   "       ternfold repl [--root DIR]\n"
                   "       ternfold run source.tfd [--trace NEW_FILE] (also writes NEW_FILE.origins)\n"
                   "       ternfold replay TRACE_FILE\n"
+                  "       ternfold fmt source.tfd [--check] (formatted source on stdout)\n"
+                  "       ternfold lsp [--root DIR]\n"
                   "Check validates the frontend, including machine scheduling.\n"
                   "Core prints verified, structured intermediate code without executing it.\n"
                   "Emit C17 to stdout or -o FILE. Build uses --cc or TF_CC and runtime root DIR (default .).\n"
@@ -172,6 +217,20 @@ int main(int argc, char **argv) {
                   "Exit: 0 success, 1 diagnosed source error, 2 usage/host/output failure, 3 runtime fault.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
+    }
+    if (argc>=2 && strcmp(argv[1],"fmt")==0) {
+        if ((argc!=3 && argc!=4) || (argc==4 && strcmp(argv[3],"--check")!=0))
+            return driver_error("expected fmt source.tfd [--check]",2);
+        return format_source(argv[2],argc==4);
+    }
+    if (argc>=2 && strcmp(argv[1],"lsp")==0) {
+        if (argc==4 && strcmp(argv[2],"--root")==0 && argv[3][0]!='\0') root=argv[3];
+        else if (argc!=2) return driver_error("expected lsp [--root DIR]",2);
+#ifdef _WIN32
+        if (_setmode(_fileno(stdin),_O_BINARY)==-1) return driver_error("cannot configure editor input",2);
+#endif
+        return tf_editor_serve(stdin,stdout,root,NULL)==TF_OK && fflush(stdout)==0 ? 0 :
+               driver_error("editor protocol or compiler host failure",2);
     }
     if (argc>=2 && strcmp(argv[1],"replay")==0) {
         if (argc!=3 || argv[2][0]=='\0') return driver_error("expected replay TRACE_FILE",2);
