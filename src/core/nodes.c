@@ -236,6 +236,15 @@ TfStatus tf_core_program_copy(TfCoreProgram **out, const TfCoreProgramData *data
     program = selected.allocate(selected.context, sizeof(*program));
     if (program == NULL) return TF_HOST_ERROR;
     *program = (TfCoreProgram){.allocator = selected, .data = *data};
+    program->data.trace_machines = copy_array(program, data->trace_machines,
+        data->trace_machine_count, sizeof *data->trace_machines);
+    program->data.trace_points = copy_array(program, data->trace_points,
+        data->trace_point_count, sizeof *data->trace_points);
+    if ((data->trace_machine_count && !program->data.trace_machines) ||
+        (data->trace_point_count && !program->data.trace_points)) {
+        tf_core_program_destroy(program);
+        return TF_HOST_ERROR;
+    }
     program->data.spans = copy_array(program, data->spans, data->span_count,
                                      sizeof(*data->spans));
     if ((data->span_count != 0 && program->data.spans == NULL) ||
@@ -286,4 +295,37 @@ const TfSpan *tf_core_span(const TfCoreProgramData *data, TfCoreSpanId id) {
 const TfCoreBlock *tf_core_block(const TfCoreFunction *function, TfCoreBlockId id) {
     return function != NULL && function->blocks != NULL && id != 0 && id <= function->block_count ?
            &function->blocks[id - 1] : NULL;
+}
+
+const TfCoreTraceMachine *tf_core_trace_machine(const TfCoreProgramData *data,
+                                               TfCoreFunctionId function) {
+    if (data == NULL || data->trace_machines == NULL) return NULL;
+    size_t lo = 0, hi = data->trace_machine_count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (data->trace_machines[mid].function < function) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < data->trace_machine_count && data->trace_machines[lo].function == function ?
+           &data->trace_machines[lo] : NULL;
+}
+
+const TfCoreTracePoint *tf_core_trace_points(const TfCoreProgramData *data,
+                                            TfCoreFunctionId function,
+                                            TfCoreBlockId block, size_t *count) {
+    if (count == NULL) return NULL;
+    *count = 0;
+    if (data == NULL || data->trace_points == NULL) return NULL;
+    size_t lo = 0, hi = data->trace_point_count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        const TfCoreTracePoint *p = &data->trace_points[mid];
+        if (p->function < function || (p->function == function && p->block < block)) lo = mid + 1;
+        else hi = mid;
+    }
+    const size_t start = lo;
+    while (lo < data->trace_point_count && data->trace_points[lo].function == function &&
+           data->trace_points[lo].block == block) ++lo;
+    *count = lo - start;
+    return *count ? data->trace_points + start : NULL;
 }

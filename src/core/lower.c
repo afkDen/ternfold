@@ -10,6 +10,7 @@
 typedef union Scratch Scratch;
 union Scratch { Scratch *next; max_align_t alignment; };
 typedef struct { TfCoreBlock block; size_t capacity; } WorkBlock;
+typedef struct { TfCoreTracePoint point; size_t order; } WorkTrace;
 typedef struct Wrapper Wrapper;
 struct Wrapper { Wrapper *next; TfCoreBuiltin builtin; TfCoreFunctionId target; };
 typedef struct { TfCoreValueId value; TfCoreFunctionId function; } Binding;
@@ -50,6 +51,9 @@ typedef struct {
     TfNodeId repl_result;
     TfCoreLowerIssue issue;
     bool failed;
+    WorkTrace *trace_points;
+    TfCoreTraceMachine *trace_machines;
+    size_t trace_point_count, trace_point_capacity, trace_machine_count, trace_machine_capacity;
 } Lower;
 enum { LOWER_DEPTH = 160, LOWER_SCRATCH = 256 * 1024 * 1024, LOWER_MATCH_WORK = 64 * 1024 * 1024 };
 
@@ -200,6 +204,29 @@ static void finish(Lower *l, TfCoreBlockId block, TfCoreValueId value, TfSpan sp
     if (!l->failed && block!=0 && block<=l->block_count && value!=0)
         l->blocks[block-1].block.terminator=(TfCoreTerminator){TF_CORE_YIELD,value,origin(l,span)};
     else l->failed=true;
+}
+
+static void observe(Lower *l, TfCoreBlockId block, TfCoreValueId value,
+                    TfCoreTraceKind kind, size_t ordinal, TfSpan span) {
+    if (l->failed) return;
+    void *buffer = l->trace_points;
+    if (!grow(l, &buffer, &l->trace_point_capacity, l->trace_point_count, sizeof *l->trace_points)) return;
+    l->trace_points = buffer;
+    const size_t index = l->trace_point_count++;
+    l->trace_points[index] = (WorkTrace){
+        {l->function, block, l->blocks[block-1].block.let_count, value, origin(l,span), kind, ordinal}, index};
+}
+
+static int compare_trace(const void *a, const void *b) {
+    const WorkTrace *x=a, *y=b;
+#define ORDER(field) if (x->field != y->field) return x->field < y->field ? -1 : 1
+    ORDER(point.function); ORDER(point.block); ORDER(point.after_let); ORDER(order);
+#undef ORDER
+    return 0;
+}
+static int compare_trace_machine(const void *a, const void *b) {
+    const TfCoreTraceMachine *x=a, *y=b;
+    return x->function < y->function ? -1 : x->function != y->function;
 }
 
 static TfCoreValueId expression(Lower *l, TfCoreBlockId block, TfNodeId id);
@@ -911,6 +938,12 @@ static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeI
     const TfCoreTypeId emissions_type=decision->as.decision.emissions;
     const TfCoreTypeId output_type=layout->as.machine.output;
     machine_body(l,target_info->step,module);
+    void *trace_machines=l->trace_machines;
+    if (!grow(l,&trace_machines,&l->trace_machine_capacity,l->trace_machine_count,sizeof *l->trace_machines))
+        return false;
+    l->trace_machines=trace_machines;
+    l->trace_machines[l->trace_machine_count++]=(TfCoreTraceMachine){
+        l->function,type,plan->guard_count,plan->emission_count};
     TfCoreFunction out={.kind=TF_CORE_FUNCTION_ORDINARY,
         .name={(const unsigned char *)"$machine_step",sizeof "$machine_step"-1},
         .module=tf_core_lower_module_name(module),.span=origin(l,plan->span),
@@ -939,11 +972,13 @@ static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeI
         const TfCoreValueId value=expression(l,out.body,writer->clause.expression);
         l->candidates[cell->symbol.index]=(Binding){value,l->function};
         values[cell_index]=value;
+        observe(l,out.body,value,TF_CORE_TRACE_WRITER,cell_index+1,writer->clause.span);
     }
     TfCoreBlockId accept=out.body;
     for (size_t i=0; i<plan->guard_count && !l->failed; ++i) {
         const TfMachineGuard *guard=&plan->guards[i];
         const TfCoreValueId condition=expression(l,accept,guard->clause.expression);
+        observe(l,accept,condition,TF_CORE_TRACE_GUARD,i+1,guard->clause.span);
         const TfCoreBlockId yes=new_block(l,guard->clause.span), no=new_block(l,guard->clause.span);
         const TfCoreValueId error=expression(l,no,guard->rejection);
         const TfCoreValueId rejected=decision_value(l,no,out.result,TF_CORE_DECISION_REJECT,
@@ -954,8 +989,10 @@ static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeI
         accept=yes;
     }
     TfCoreValueId *emissions=array(l,plan->emission_count,sizeof *emissions);
-    for (size_t i=0; i<plan->emission_count && !l->failed; ++i)
+    for (size_t i=0; i<plan->emission_count && !l->failed; ++i) {
         emissions[i]=expression(l,accept,plan->emissions[i].expression);
+        observe(l,accept,emissions[i],TF_CORE_TRACE_EMISSION,i+1,plan->emissions[i].span);
+    }
     const TfCoreValueId emitted=emit(l,accept,emissions_type,(TfCoreOperation){.kind=TF_CORE_OP_LIST,
         .operands={emissions,plan->emission_count},.as.element_type=output_type},plan->span);
     const TfCoreValueId next=machine_value(l,accept,type,values,plan->cell_count,plan->span);
@@ -1030,6 +1067,13 @@ static TfStatus lower(TfCoreProgram **out, TfCoreFunctionId *repl_function,
                 goto done;
         }
     TfCoreProgramData d={.functions=l.functions,.function_count=l.function_count,.entry=l.entry};
+    if (l.trace_point_count) qsort(l.trace_points,l.trace_point_count,sizeof *l.trace_points,compare_trace);
+    if (l.trace_machine_count) qsort(l.trace_machines,l.trace_machine_count,sizeof *l.trace_machines,compare_trace_machine);
+    TfCoreTracePoint *points=array(&l,l.trace_point_count,sizeof *points);
+    if (l.failed) goto done;
+    for (size_t i=0;i<l.trace_point_count;++i) points[i]=l.trace_points[i].point;
+    d.trace_points=points; d.trace_point_count=l.trace_point_count;
+    d.trace_machines=l.trace_machines; d.trace_machine_count=l.trace_machine_count;
     tf_core_lower_type_view(l.types,&d);
     tf_core_lower_constant_view(l.constants,&d);
     status=tf_core_program_copy(out,&d,&l.allocator);

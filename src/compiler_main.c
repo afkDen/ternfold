@@ -15,6 +15,7 @@
 #include "execution/driver_run.h"
 #include "backend/driver_native.h"
 #include "repl.h"
+#include "ternfold/trace_artifact.h"
 
 #include <signal.h>
 #include <string.h>
@@ -39,7 +40,7 @@ typedef enum { INSPECT_CHECK, INSPECT_PLAN, INSPECT_CORE, EXECUTE_RUN, EMIT_C, B
 
 static int check_source(const char *path, const char *root, TfDiagnosticFormat format,
                         DriverMode mode, bool json, const char *input,
-                        const TfDriverNativeOptions *native) {
+                        const TfDriverNativeOptions *native, const char *trace_path) {
     TfSourceManager *manager = NULL;
     TfResolution *resolution = NULL;
     TfTypedSignatures *signatures = NULL;
@@ -97,7 +98,7 @@ static int check_source(const char *path, const char *root, TfDiagnosticFormat f
             } else if (tf_core_verify(&verified,core,NULL,&verification) != TF_OK) {
                 failure = "cannot verify lowered Core (resource limit or compiler invariant failure)";
             } else if (mode==EXECUTE_RUN) {
-                code=tf_run_verified(verified,shown,input,format,&failure);
+                code=tf_run_verified_traced(verified,shown,input,format,&failure,trace_path);
             } else if (native_mode) {
                 const TfCoreProgramData *data=tf_verified_core_data(verified);
                 if (tf_core_function(data,data->entry)==NULL)
@@ -136,7 +137,7 @@ int main(int argc, char **argv) {
     TfDriverNativeOptions native={0};
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
-    const char *directory = NULL, *root = NULL, *input = NULL, *failure = NULL;
+    const char *directory = NULL, *root = NULL, *input = NULL, *failure = NULL, *trace_path = NULL;
     TfStatus status;
     int i, code = 2;
 #ifdef _WIN32
@@ -157,6 +158,8 @@ int main(int argc, char **argv) {
                   "       ternfold build source.tfd -o EXE [--cc PATH] [--runtime-root DIR] [--sanitize]\n"
                   "                                     [--root DIR] [--diagnostics-json]\n"
                   "       ternfold repl [--root DIR]\n"
+                  "       ternfold run source.tfd [--trace NEW_FILE] (also writes NEW_FILE.origins)\n"
+                  "       ternfold replay TRACE_FILE\n"
                   "Check validates the frontend, including machine scheduling.\n"
                   "Core prints verified, structured intermediate code without executing it.\n"
                   "Emit C17 to stdout or -o FILE. Build uses --cc or TF_CC and runtime root DIR (default .).\n"
@@ -169,6 +172,11 @@ int main(int argc, char **argv) {
                   "Exit: 0 success, 1 diagnosed source error, 2 usage/host/output failure, 3 runtime fault.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
+    }
+    if (argc>=2 && strcmp(argv[1],"replay")==0) {
+        if (argc!=3 || argv[2][0]=='\0') return driver_error("expected replay TRACE_FILE",2);
+        return tf_trace_artifact_replay(stdout,argv[2])==TF_TRACE_IO_OK ? 0 :
+               driver_error("cannot inspect trace (read, syntax, order or size failure)",2);
     }
     if (argc>=2 && strcmp(argv[1],"repl")==0) {
         if (argc==4 && strcmp(argv[2],"--root")==0 && argv[3][0]!='\0' && argv[3][0]!='-') root=argv[3];
@@ -205,6 +213,7 @@ int main(int argc, char **argv) {
         else if ((check_mode || plan_mode || core_mode || run_mode || native_mode) &&
                  strcmp(argv[i],"--root")==0 && root==NULL && has_value) root=argv[++i];
         else if (run_mode && strcmp(argv[i],"--stdin-file")==0 && input==NULL && has_value) input=argv[++i];
+        else if (run_mode && strcmp(argv[i],"--trace")==0 && trace_path==NULL && has_value) trace_path=argv[++i];
         else if (native_mode && strcmp(argv[i],"-o")==0 && native.output==NULL && has_value) native.output=argv[++i];
         else if (build_mode && strcmp(argv[i],"--cc")==0 && native.compiler==NULL && has_value) native.compiler=argv[++i];
         else if (build_mode && strcmp(argv[i],"--runtime-root")==0 && native.runtime==NULL && has_value) native.runtime=argv[++i];
@@ -216,7 +225,7 @@ int main(int argc, char **argv) {
     if (check_mode || plan_mode || core_mode || run_mode || native_mode)
         return check_source(argv[2],root,diagnostic_format,build_mode ? BUILD_NATIVE : emit_mode ? EMIT_C :
                             run_mode ? EXECUTE_RUN : core_mode ? INSPECT_CORE :
-                            plan_mode ? INSPECT_PLAN : INSPECT_CHECK,dump_format == TF_TOKEN_DUMP_JSON,input,&native);
+                            plan_mode ? INSPECT_PLAN : INSPECT_CHECK,dump_format == TF_TOKEN_DUMP_JSON,input,&native,trace_path);
     if (tf_source_manager_create(&manager,NULL) != TF_OK || tf_diagnostic_bag_create(&bag,100,NULL) != TF_OK) {
         failure = "cannot allocate compiler session"; goto cleanup;
     }

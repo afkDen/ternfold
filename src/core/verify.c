@@ -522,6 +522,43 @@ static bool signatures(Verify *v) {
     return true;
 }
 
+static bool observation_metadata(Verify *v) {
+    const TfCoreProgramData *d=v->data;
+    TfCoreFunctionId previous=0;
+    for (size_t i=0;i<d->trace_machine_count;++i) {
+        const TfCoreTraceMachine *m=&d->trace_machines[i];
+        const TfCoreFunction *fn=tf_core_function(d,m->function);
+        const TfCoreType *machine=type(v,m->machine);
+        const TfCoreType *decision=fn ? type(v,fn->result) : NULL;
+        v->at=(TfCoreVerifyIssue){.function=m->function,.type=m->machine};
+        if (m->function<=previous || fn==NULL || fn->span==0 || fn->kind!=TF_CORE_FUNCTION_ORDINARY ||
+            fn->parameter_count!=2 || fn->capture_count!=0 || machine==NULL ||
+            machine->kind!=TF_CORE_TYPE_MACHINE || decision==NULL ||
+            decision->kind!=TF_CORE_TYPE_DECISION || decision->as.decision.machine!=m->machine ||
+            fn->parameters[0].type!=m->machine || fn->parameters[1].type!=machine->as.machine.input ||
+            m->guard_count>d->trace_point_count || m->emission_count>d->trace_point_count)
+            return reject(v,TF_CORE_VERIFY_OBSERVATION);
+        previous=m->function;
+    }
+    for (size_t i=0;i<d->trace_point_count;++i) {
+        const TfCoreTracePoint *p=&d->trace_points[i];
+        const TfCoreFunction *fn=tf_core_function(d,p->function);
+        const TfCoreBlock *block=tf_core_block(fn,p->block);
+        v->at=(TfCoreVerifyIssue){.function=p->function,.block=p->block,.value=p->value,.span=p->span};
+        if (!tf_core_trace_machine(d,p->function) || !block || p->after_let>block->let_count ||
+            p->span==0 || !span_id(v,p->span) || p->kind<TF_CORE_TRACE_WRITER ||
+            p->kind>TF_CORE_TRACE_EMISSION || p->ordinal==0)
+            return reject(v,TF_CORE_VERIFY_OBSERVATION);
+        if (i) {
+            const TfCoreTracePoint *prior=p-1;
+            if (p->function<prior->function || (p->function==prior->function &&
+                (p->block<prior->block || (p->block==prior->block && p->after_let<prior->after_let))))
+                return reject(v,TF_CORE_VERIFY_OBSERVATION);
+        }
+    }
+    return true;
+}
+
 typedef struct {
     size_t remaining, exact;
     bool active, is_exact;
@@ -541,6 +578,8 @@ typedef struct {
     Fact prior;
     const TfCoreOperation *excludes;
     bool started, impossible;
+    const TfCoreTracePoint *observations;
+    size_t observation_count, next_observation;
 } BlockFrame;
 
 typedef struct {
@@ -946,6 +985,7 @@ static bool enter(Body *b, const Child *child) {
     *frame = (BlockFrame){.id = child->block, .result = child->result,
                          .subject = child->subject, .excludes = child->excludes,
                          .impossible = child->impossible};
+    frame->observations=tf_core_trace_points(v->data,v->at.function,child->block,&frame->observation_count);
     if (frame->subject != 0) {
         frame->prior = b->slots[frame->subject - 1].fact;
         b->slots[frame->subject - 1].fact = child->fact;
@@ -998,6 +1038,24 @@ static bool walk_blocks(Body *b) {
         const TfCoreLet *let;
         Child child;
         v->at.block = frame->id;
+        if (!frame->started) {
+            while (frame->next_observation<frame->observation_count &&
+                   frame->observations[frame->next_observation].after_let==frame->next_let) {
+                const TfCoreTracePoint *p=&frame->observations[frame->next_observation++];
+                const TfCoreTraceMachine *m=tf_core_trace_machine(v->data,p->function);
+                const TfCoreType *machine=type(v,m->machine);
+                const TfCoreTypeId actual=visible(b,p->value);
+                v->at.value=p->value;
+                if (!actual || (p->kind==TF_CORE_TRACE_WRITER &&
+                    (p->ordinal>machine->as.machine.cell_count ||
+                     actual!=machine->as.machine.cells[p->ordinal-1].type)) ||
+                    (p->kind==TF_CORE_TRACE_GUARD &&
+                     (p->ordinal>m->guard_count || !kind(v,actual,TF_CORE_TYPE_BOOL))) ||
+                    (p->kind==TF_CORE_TRACE_EMISSION &&
+                     (p->ordinal>m->emission_count || actual!=machine->as.machine.output)))
+                    return reject(v,TF_CORE_VERIFY_OBSERVATION);
+            }
+        }
         if (frame->next_let == block->let_count) {
             if (!leave(b, frame, block)) return false;
             continue;
@@ -1095,10 +1153,43 @@ static bool build_keys(Body *b) {
     return true;
 }
 
+static bool observation_census(Verify *v, const TfCoreFunction *fn) {
+    const TfCoreTraceMachine *m=tf_core_trace_machine(v->data,v->at.function);
+    if (!m) return true;
+    const TfCoreType *machine=type(v,m->machine);
+    const size_t writers=machine->as.machine.cell_count;
+    const size_t bound=v->data->trace_point_count;
+    if (writers>bound || m->guard_count>bound-writers ||
+        m->emission_count>bound-writers-m->guard_count)
+        return reject(v,TF_CORE_VERIFY_OBSERVATION);
+    const size_t total=writers+m->guard_count+m->emission_count;
+    unsigned char *seen=workspace(v,total,1);
+    if (total && !seen) return false;
+    if (total) memset(seen,0,total);
+    size_t found=0;
+    bool valid=true;
+    for (size_t block=1;block<=fn->block_count && valid;++block) {
+        size_t count=0;
+        const TfCoreTracePoint *points=tf_core_trace_points(v->data,v->at.function,block,&count);
+        for (size_t i=0;i<count;++i) {
+            const TfCoreTracePoint *p=&points[i];
+            const size_t limit=p->kind==TF_CORE_TRACE_WRITER ? writers :
+                               p->kind==TF_CORE_TRACE_GUARD ? m->guard_count : m->emission_count;
+            const size_t base=p->kind==TF_CORE_TRACE_WRITER ? 0 :
+                              p->kind==TF_CORE_TRACE_GUARD ? writers : writers+m->guard_count;
+            if (p->ordinal>limit || seen[base+p->ordinal-1]) { valid=false; break; }
+            seen[base+p->ordinal-1]=1;
+            ++found;
+        }
+    }
+    release(v,seen);
+    return (valid && found==total) || reject(v,TF_CORE_VERIFY_OBSERVATION);
+}
+
 static bool verify_body(Verify *v, const TfCoreFunction *fn) {
     Body b = {.verify = v, .function = fn};
     bool ok = false;
-    if (!census(&b)) return false;
+    if (!census(&b) || !observation_census(v,fn)) return false;
     if (fn->kind == TF_CORE_FUNCTION_ENTRY_ONLY) b.snapshot = fn->parameters[0].value;
     b.slots = workspace(v, fn->value_count, sizeof(*b.slots));
     if (fn->value_count != 0 && b.slots == NULL) goto cleanup;
@@ -1137,7 +1228,7 @@ static bool verify_program(Verify *v) {
             return reject(v, TF_CORE_VERIFY_SPAN);
         }
     }
-    if (!verify_types(v) || !verify_constants(v) || !signatures(v)) return false;
+    if (!verify_types(v) || !verify_constants(v) || !signatures(v) || !observation_metadata(v)) return false;
     for (size_t i = 0; i < v->data->function_count; ++i) {
         const TfCoreFunction *fn = &v->data->functions[i];
         v->at = (TfCoreVerifyIssue){.function = i + 1, .span = fn->span};

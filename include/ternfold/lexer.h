@@ -5,18 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "ternfold/allocator.h"
 
 /* No global mutable state. All initialized owners must be destroyed, including
  * SOURCE_ERROR results. HOST_ERROR leaves a zeroed, destroyable output.
  * Constructors require fresh (not already owning) output objects. An allocator
  * and its context must outlive every object allocated through it. NULL selects
  * malloc/free. allocate must return storage aligned for any C object. */
-typedef struct {
-    void *context;
-    void *(*allocate)(void *context, size_t size);
-    void (*deallocate)(void *context, void *pointer);
-} TfAllocator;
-
 typedef enum { TF_OK = 0, TF_SOURCE_ERROR = 1, TF_HOST_ERROR = 2,
                TF_LEX_ERROR = 3 } TfStatus;
 

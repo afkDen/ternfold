@@ -286,11 +286,7 @@ static bool write_origins(FILE *out, const TfCoreProgramData *core) {
              !byte_initializer(out, (const unsigned char *)name, strlen(name)) ||
              fputs(";\n", out) == EOF)) return false;
     }
-    if (fputs("struct tf_generated_origin {\n"
-              "    const unsigned char *path;\n"
-              "    size_t path_length, start, end;\n"
-              "    size_t start_line, start_column, end_line, end_column;\n"
-              "};\n"
+    if (fputs("#include \"ternfold/trace_artifact.h\"\n"
               "static const struct tf_generated_origin tf_origins[] = {\n", out) == EOF) return false;
     if (core->span_count == 0 && fputs("    {0},\n", out) == EOF) return false;
     previous = NULL;

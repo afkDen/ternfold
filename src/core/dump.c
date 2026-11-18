@@ -321,5 +321,16 @@ TfStatus tf_core_dump_write(FILE *stream, const TfVerifiedCore *verified) {
     }
     for (size_t i = 0; i < data->function_count; ++i)
         if (!function_lines(stream, i + 1, &data->functions[i])) return TF_HOST_ERROR;
+    for (size_t i=0;i<data->trace_machine_count;++i) {
+        const TfCoreTraceMachine *m=&data->trace_machines[i];
+        if (fprintf(stream,"trace machine f%zu:t%zu guards=%zu emissions=%zu\n",
+                    m->function,m->machine,m->guard_count,m->emission_count)<0) return TF_HOST_ERROR;
+    }
+    for (size_t i=0;i<data->trace_point_count;++i) {
+        const TfCoreTracePoint *p=&data->trace_points[i];
+        if (fprintf(stream,"trace point f%zu b%zu after=%zu kind=%u ordinal=%zu v%zu span=s%zu\n",
+                    p->function,p->block,p->after_let,(unsigned)p->kind,p->ordinal,p->value,p->span)<0)
+            return TF_HOST_ERROR;
+    }
     return ferror(stream) ? TF_HOST_ERROR : TF_OK;
 }

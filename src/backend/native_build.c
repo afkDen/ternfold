@@ -723,6 +723,10 @@ static const PathChar *const runtime_files[] = {
     P("runtime/src/ternfold_rt_value_ops.c"),
     P("src/checked_numeric.c"),
     P("src/execution/scalars.c"),
+    P("src/execution/trace.c"),
+    P("src/execution/trace_value.c"),
+    P("src/execution/trace_io.c"),
+    P("src/execution/trace_artifact.c"),
     P("runtime/include/ternfold_rt.h"),
     P("runtime/include/ternfold_rt_numeric.h"),
     P("runtime/include/ternfold_rt_stack.h"),
@@ -733,12 +737,17 @@ static const PathChar *const runtime_files[] = {
     P("runtime/include/ternfold_rt_builtins.h"),
     P("runtime/include/ternfold_rt_value_ops.h"),
     P("include/ternfold/checked_numeric.h"),
-    P("src/execution/scalars.h")
+    P("src/execution/scalars.h"),
+    P("include/ternfold/trace.h"),
+    P("include/ternfold/trace_value.h"),
+    P("include/ternfold/allocator.h"),
+    P("include/ternfold/trace_io.h"),
+    P("include/ternfold/trace_artifact.h")
 };
 static const PathChar *const include_dirs[] = {P("runtime/include"), P("include"), P("src/execution")};
 
 enum {
-    RUNTIME_SOURCES = 10,
+    RUNTIME_SOURCES = 14,
     RUNTIME_FILES = sizeof runtime_files / sizeof *runtime_files,
     INCLUDE_DIRS = sizeof include_dirs / sizeof *include_dirs,
     INPUTS = RUNTIME_FILES + 2
@@ -887,7 +896,7 @@ TfNativeBuildStatus tf_native_build(const TfNativeBuildOptions *options,
     temporary = join(stage, local_executable + 2);
     if (!temporary) { message(result, "allocate temporary executable path"); goto done; }
 
-    PathChar *argv[40];
+    PathChar *argv[64];
     size_t argc = 0;
     argv[argc++] = paths[0];
     argv[argc++] = P("-std=c17");

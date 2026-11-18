@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "repl_value.h"
 #include "../internal.h"
+#include "ternfold/trace_value.h"
 
 #include <string.h>
 
@@ -10,6 +11,8 @@ typedef struct {
     TfCoreFunctionId function;
     size_t base, destination;
     TfCoreSpanId invocation;
+    uint64_t trace_invocation, trace_parent, trace_active;
+    size_t trace_next;
     union {
         struct { const TfCoreBlock *body; size_t next; bool root; } block;
         struct {
@@ -43,6 +46,7 @@ typedef struct {
     TfRuntimeFault *fault;
     TfExecValue result;
     bool complete;
+    TfTraceRecorder *trace;
 } Vm;
 
 #define HOST_DESTINATION SIZE_MAX
@@ -55,6 +59,54 @@ TfInterpreterLimits tf_interpreter_default_limits(void) {
 static bool budget(Vm *vm, uint64_t work) {
     if (work>vm->steps) return false;
     vm->steps-=work; return true;
+}
+
+static TfTraceValueView trace_view(void *context, const void *input) {
+    const Vm *vm=context;
+    const TfExecValue *v=input;
+    const TfCoreType *type=tf_core_type(vm->data,v->type);
+    TfTraceValueView view={0};
+    switch (type->kind) {
+    case TF_CORE_TYPE_INT: view.kind=TF_TRACE_VALUE_INT; memcpy(&view.bits,&v->as.integer,8); break;
+    case TF_CORE_TYPE_FLOAT: view.kind=TF_TRACE_VALUE_FLOAT; view.bits=v->as.bits; break;
+    case TF_CORE_TYPE_BOOL: view.kind=TF_TRACE_VALUE_BOOL; view.bits=v->as.bits; break;
+    case TF_CORE_TYPE_CHAR: view.kind=TF_TRACE_VALUE_CHAR; view.bits=v->as.bits; break;
+    case TF_CORE_TYPE_TEXT: view.kind=TF_TRACE_VALUE_TEXT; view.bytes=v->as.text.bytes; view.count=v->as.text.length; break;
+    case TF_CORE_TYPE_UNIT: view.kind=TF_TRACE_VALUE_UNIT; break;
+    case TF_CORE_TYPE_TAG: view.kind=TF_TRACE_VALUE_TAG; view.tag=v->as.tag; break;
+    case TF_CORE_TYPE_FUNCTION: view.kind=TF_TRACE_VALUE_FUNCTION; break;
+    default:
+        view.kind=type->kind==TF_CORE_TYPE_LIST ? TF_TRACE_VALUE_LIST :
+                  type->kind==TF_CORE_TYPE_RECORD ? TF_TRACE_VALUE_RECORD :
+                  type->kind==TF_CORE_TYPE_MACHINE ? TF_TRACE_VALUE_MACHINE : TF_TRACE_VALUE_VARIANT;
+        view.count=v->as.aggregate.values.count; view.tag=v->as.aggregate.identity;
+        break;
+    }
+    return view;
+}
+static const void *trace_child(void *context, const void *input, size_t index) {
+    (void)context;
+    const TfExecValue *v=input;
+    return &v->as.aggregate.values.items[index];
+}
+static void trace_event(Vm *vm, const Frame *frame, TfTraceEventKind kind,
+                        TfCoreSpanId span, size_t ordinal, const TfExecValue *value,
+                        const TfExecValue *input) {
+    if (!vm->trace || !frame->trace_invocation) return;
+    TfTracePreview preview={0};
+    if (kind==TF_TRACE_FAULT) {
+        memcpy(preview.bytes,"R000",4);
+        preview.bytes[3]=(unsigned char)('0'+ordinal);
+        preview.length=4;
+    } else if (value && vm->trace->count<vm->trace->capacity) {
+        TfTraceValueAdapter adapter={vm,trace_view,trace_child};
+        if (input) tf_trace_preview_pair(&preview,adapter,value,input);
+        else tf_trace_preview(&preview,adapter,value);
+    }
+    const TfTraceEvent event={.kind=kind,.invocation_id=frame->trace_invocation,
+        .parent_invocation_id=frame->trace_parent,.function_id=frame->function,
+        .span_id=span,.ordinal=kind==TF_TRACE_FAULT ? 0 : ordinal};
+    (void)tf_trace_capture(vm->trace,&event,preview.bytes,preview.length,preview.incomplete);
 }
 
 /* Frame and slot storage can grow and is reused after return. Allocation
@@ -78,6 +130,11 @@ static bool grow(Vm *vm, void **pointer, size_t *capacity, size_t needed, size_t
 }
 
 static TfStatus fault(Vm *vm, TfRuntimeCode code, TfCoreSpanId span) {
+    if (vm->trace) for (size_t i=vm->frame_count;i>0;--i) {
+        const Frame *f=&vm->frames[i-1];
+        if (f->kind==BLOCK && f->as.block.root)
+            trace_event(vm,f,TF_TRACE_FAULT,span,(size_t)code,NULL,NULL);
+    }
     if (vm->fault==NULL) return TF_SOURCE_ERROR;
     TfRuntimeFault *f=vm->fault;
     f->code=code; f->span=span;
@@ -114,6 +171,7 @@ static bool call(Vm *vm, TfCoreFunctionId id, TfExecValues captures, const TfExe
                  const TfCoreValueId *ids, size_t caller, size_t destination, TfCoreSpanId origin) {
     const TfCoreFunction *fn=tf_core_function(vm->data,id);
     const size_t base=vm->slot_count;
+    const uint64_t parent=vm->frame_count ? vm->frames[vm->frame_count-1].trace_active : 0;
     if (fn==NULL || captures.count!=fn->capture_count || (captures.count!=0 && captures.items==NULL) ||
         (fn->parameter_count!=0 && direct==NULL && ids==NULL) ||
         vm->call_depth==vm->call_limit || fn->value_count>SIZE_MAX-base) return false;
@@ -128,12 +186,24 @@ static bool call(Vm *vm, TfCoreFunctionId id, TfExecValues captures, const TfExe
                          .as.block={tf_core_block(fn,fn->body),0,true}})) return false;
     vm->slot_count=base+fn->value_count;
     ++vm->call_depth;
+    Frame *frame=&vm->frames[vm->frame_count-1];
+    frame->trace_active=parent;
+    if (vm->trace && tf_core_trace_machine(vm->data,id) &&
+        tf_trace_next_invocation(vm->trace,&frame->trace_invocation)) {
+        frame->trace_parent=parent;
+        frame->trace_active=frame->trace_invocation;
+        trace_event(vm,frame,TF_TRACE_STEP_BEGIN,fn->span,0,
+                    &vm->slots[base+fn->parameters[0].value-1],
+                    &vm->slots[base+fn->parameters[1].value-1]);
+    }
     return true;
 }
 
 static bool child(Vm *vm, const Frame *frame, TfCoreBlockId block, size_t destination) {
     const TfCoreFunction *fn=tf_core_function(vm->data,frame->function);
     return push(vm,(Frame){.kind=BLOCK,.function=frame->function,.base=frame->base,.destination=destination,
+                           .trace_invocation=frame->trace_invocation,.trace_parent=frame->trace_parent,
+                           .trace_active=frame->trace_active,
                            .invocation=frame->invocation,.as.block={tf_core_block(fn,block),0,false}});
 }
 
@@ -186,6 +256,20 @@ static TfStatus evaluate(Vm *vm) {
             continue;
         }
         const TfCoreBlock *b=frame.as.block.body;
+        if (vm->trace && frame.trace_invocation) {
+            const TfCoreFunction *fn=tf_core_function(vm->data,frame.function);
+            const size_t block=(size_t)(b-fn->blocks)+1;
+            size_t count=0;
+            const TfCoreTracePoint *points=tf_core_trace_points(vm->data,frame.function,block,&count);
+            while (vm->frames[top].trace_next<count &&
+                   points[vm->frames[top].trace_next].after_let==frame.as.block.next) {
+                const TfCoreTracePoint *p=&points[vm->frames[top].trace_next++];
+                const TfExecValue observed=read_slot(vm,frame.base,p->value);
+                trace_event(vm,&frame,p->kind==TF_CORE_TRACE_WRITER ? TF_TRACE_WRITER :
+                            p->kind==TF_CORE_TRACE_GUARD ? TF_TRACE_GUARD : TF_TRACE_EMISSION,
+                            p->span,p->ordinal,&observed,NULL);
+            }
+        }
         const bool wrapper=tf_core_function(vm->data,frame.function)->kind==TF_CORE_FUNCTION_PRELUDE_WRAPPER;
         if (frame.as.block.next==b->let_count) {
             const TfCoreTerminator term=b->terminator;
@@ -193,6 +277,10 @@ static TfStatus evaluate(Vm *vm) {
             if (!budget(vm,1)) return fault(vm,TF_RUNTIME_RESOURCE,span);
             if (term.kind!=TF_CORE_YIELD) return fault(vm,TF_RUNTIME_INVARIANT,span);
             const TfExecValue value=read_slot(vm,frame.base,term.value);
+            if (frame.as.block.root && frame.trace_invocation)
+                trace_event(vm,&frame,value.as.aggregate.identity==TF_CORE_DECISION_ACCEPT ?
+                            TF_TRACE_ACCEPT : TF_TRACE_REJECT,
+                            tf_core_function(vm->data,frame.function)->span,0,&value,NULL);
             --vm->frame_count;
             if (frame.as.block.root) { --vm->call_depth; vm->slot_count=frame.base; }
             deliver(vm,frame.destination,value);
@@ -253,6 +341,7 @@ static TfStatus evaluate(Vm *vm) {
             TfExecValue *output=tf_exec_allocate(&vm->arena,input.count,sizeof *output);
             if ((input.count!=0 && output==NULL) || !push(vm,(Frame){.kind=MAP,.function=frame.function,
                 .base=frame.base,.destination=destination,.invocation=frame.invocation,
+                .trace_invocation=frame.trace_invocation,.trace_parent=frame.trace_parent,.trace_active=frame.trace_active,
                 .as.map={.input=input,.output=output,.result=let->type,.body=op->as.list_map.body,
                          .element=op->as.list_map.element.value,.span=span}}))
                 return fault(vm,TF_RUNTIME_RESOURCE,span);
@@ -273,6 +362,7 @@ static TfStatus evaluate(Vm *vm) {
                 if ((!fold && input.count!=0 && output==NULL) || !push(vm,(Frame){
                     .kind=fold ? BUILTIN_FOLD : BUILTIN_MAP,.function=frame.function,
                     .base=frame.base,.destination=destination,.invocation=frame.invocation,
+                    .trace_invocation=frame.trace_invocation,.trace_parent=frame.trace_parent,.trace_active=frame.trace_active,
                     .as.map={.input=input,.output=output,.result=let->type,.span=span,
                              .closure=args[fold ? 2 : 1],.accumulator=fold ? args[1] : (TfExecValue){0}}
                 })) return fault(vm,TF_RUNTIME_RESOURCE,span);
@@ -335,16 +425,16 @@ static void destroy(Vm *vm) {
     tf_exec_arena_destroy(&vm->arena);
 }
 
-TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *program,
+TfStatus tf_interpret_entry_traced(TfInterpreterResult **out, const TfVerifiedCore *program,
                            const TfCoreText *lines, size_t line_count,
                            const TfInterpreterLimits *limits, const TfAllocator *allocator,
-                           TfRuntimeFault *reported) {
+                           TfRuntimeFault *reported, TfTraceRecorder *trace) {
     if (reported!=NULL) *reported=(TfRuntimeFault){0};
     if (out==NULL) return TF_HOST_ERROR;
     *out=NULL;
     const TfInterpreterLimits cap=limits!=NULL ? *limits : tf_interpreter_default_limits();
     Vm vm={.arena={.allocator=tf_allocator(allocator),.remaining=cap.max_bytes},
-        .data=tf_verified_core_data(program),.call_limit=cap.max_call_depth,.steps=cap.max_steps,.fault=reported};
+        .data=tf_verified_core_data(program),.call_limit=cap.max_call_depth,.steps=cap.max_steps,.fault=reported,.trace=trace};
     if (vm.data==NULL || vm.data->entry==0 || !tf_allocator_valid(vm.arena.allocator)) return TF_HOST_ERROR;
     const TfCoreFunction *entry=tf_core_function(vm.data,vm.data->entry);
     TfExecValue input={0};
@@ -366,6 +456,13 @@ TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *pro
 done:
     destroy(&vm);
     return status;
+}
+
+TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *program,
+                           const TfCoreText *lines, size_t line_count,
+                           const TfInterpreterLimits *limits, const TfAllocator *allocator,
+                           TfRuntimeFault *reported) {
+    return tf_interpret_entry_traced(out,program,lines,line_count,limits,allocator,reported,NULL);
 }
 
 TfStatus tf_interpret_repl(TfReplValue *out, const TfVerifiedCore *program,

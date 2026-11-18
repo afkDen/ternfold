@@ -2,6 +2,7 @@
 #define TERNFOLD_INTERPRETER_H
 
 #include "ternfold/core_verify.h"
+#include "ternfold/trace.h"
 
 typedef struct TfInterpreterResult TfInterpreterResult;
 
@@ -53,6 +54,12 @@ TfStatus tf_interpret_entry(TfInterpreterResult **out, const TfVerifiedCore *pro
                            const TfCoreText *lines, size_t line_count,
                            const TfInterpreterLimits *limits, const TfAllocator *allocator,
                            TfRuntimeFault *fault);
+/* Optional observation store is borrowed for this call. It owns copied
+ * previews only. Capacity exhaustion cannot change evaluation or its budget. */
+TfStatus tf_interpret_entry_traced(TfInterpreterResult **out, const TfVerifiedCore *program,
+                           const TfCoreText *lines, size_t line_count,
+                           const TfInterpreterLimits *limits, const TfAllocator *allocator,
+                           TfRuntimeFault *fault, TfTraceRecorder *trace);
 
 size_t tf_interpreter_result_count(const TfInterpreterResult *result);
 /* Out-of-range returns false without writing *line. Bytes borrow result. */

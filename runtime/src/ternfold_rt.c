@@ -459,3 +459,39 @@ uint64_t tf_test_swap_refcount(tf_context *ctx, tf_value value, uint64_t count) 
     return previous;
 }
 #endif
+
+static TfTraceValueView trace_view(void *context, const void *input) {
+    const tf_context *ctx=context;
+    const tf_value *v=input;
+    TfTraceValueView view={0};
+    switch (v->tag) {
+    case TF_VALUE_UNIT: view.kind=TF_TRACE_VALUE_UNIT; break;
+    case TF_VALUE_INT: view.kind=TF_TRACE_VALUE_INT; memcpy(&view.bits,&v->as.integer,8); break;
+    case TF_VALUE_FLOAT: view.kind=TF_TRACE_VALUE_FLOAT; view.bits=v->as.float_bits; break;
+    case TF_VALUE_BOOL: view.kind=TF_TRACE_VALUE_BOOL; view.bits=v->as.boolean; break;
+    case TF_VALUE_CHAR: view.kind=TF_TRACE_VALUE_CHAR; view.bits=v->as.character; break;
+    case TF_VALUE_BOXED: {
+        const tf_object *o=box(ctx,*v);
+        if (!o) break; /* Fabricated values are outside the adapter contract. */
+        if (o->kind==TF_RT_TYPE_TEXT) {
+            view.kind=TF_TRACE_VALUE_TEXT; view.bytes=((const text_object *)o)->bytes; view.count=o->count;
+        } else {
+            view.kind=o->kind==TF_RT_TYPE_LIST ? TF_TRACE_VALUE_LIST :
+                      o->kind==TF_RT_TYPE_RECORD ? TF_TRACE_VALUE_RECORD :
+                      o->kind==TF_RT_TYPE_MACHINE ? TF_TRACE_VALUE_MACHINE :
+                      o->kind==TF_RT_TYPE_FUNCTION ? TF_TRACE_VALUE_FUNCTION : TF_TRACE_VALUE_VARIANT;
+            view.tag=o->identity; view.count=o->count;
+        }
+        break;
+    }
+    }
+    return view;
+}
+static const void *trace_child(void *context, const void *input, size_t index) {
+    const tf_value *v=input;
+    const tf_object *o=box(context,*v);
+    return &((const children_object *)o)->items[index];
+}
+TfTraceValueAdapter tf_runtime_trace_adapter(tf_context *ctx) {
+    return (TfTraceValueAdapter){ctx,trace_view,trace_child};
+}

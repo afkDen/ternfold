@@ -201,12 +201,24 @@ static void body(Emitter *e,const TfCBody *c,TfCoreFunctionId id) {
         checked(e,fn,fn->captures[i].span,"tf_retain"); line(e,", f->captures[%zu]",i);
         check_end(e,fn->captures[i].value-1);
     }
+    if (tf_core_trace_machine(e->core,id)) line(e,"    tf_stack_trace_begin(s, f, %zu);\n",fn->span);
     line(e,"    goto block_%zu;\n",fn->body);
     for (size_t i=0;i<fn->block_count && !e->failed;++i) {
         const TfCoreBlock *block=&fn->blocks[i];
         const TfCBlockExit exit=c->exits[i];
         line(e,"block_%zu: ;\n",i+1);
-        for (size_t j=0;j<block->let_count && !e->failed;++j) operation(e,c,&block->lets[j]);
+        size_t observation_count=0, observation=0;
+        const TfCoreTracePoint *points=tf_core_trace_points(e->core,id,i+1,&observation_count);
+        for (size_t j=0;j<=block->let_count && !e->failed;++j) {
+            while (observation<observation_count && points[observation].after_let==j) {
+                const TfCoreTracePoint *p=&points[observation++];
+                line(e,"    tf_stack_trace_value(s, f, %s, %zu, %zu, %zu);\n",
+                     p->kind==TF_CORE_TRACE_WRITER ? "TF_TRACE_WRITER" :
+                     p->kind==TF_CORE_TRACE_GUARD ? "TF_TRACE_GUARD" : "TF_TRACE_EMISSION",
+                     p->span,p->ordinal,p->value-1);
+            }
+            if (j<block->let_count) operation(e,c,&block->lets[j]);
+        }
         if (block->terminator.kind==TF_CORE_UNREACHABLE) {
             line(e,"    return tf_context_fail(s->ctx, TF_R004, %zu);\n",block->terminator.span);
         } else if (exit.kind==TF_C_ROOT) {
@@ -350,9 +362,13 @@ static void launcher(Emitter *e) {
            "}\n",core->function_count);
     line(e,"\nint main(int argc, char **argv) {\n"
            "    (void)tf_builtins; (void)tf_type_count; (void)tf_active_pool;\n"
-           "    const char *input_path = NULL;\n"
-           "    if (argc == 3 && strcmp(argv[1], \"--stdin-file\") == 0) input_path = argv[2];\n"
-           "    else if (argc != 1) { (void)fputs(\"expected [--stdin-file FILE]\\n\", stderr); return 2; }\n"
+           "    const char *input_path = NULL, *trace_path = NULL;\n"
+           "    for (int i = 1; i < argc; ++i) {\n"
+           "        if (i + 1 >= argc || argv[i + 1][0] == '\\0') return 2;\n"
+           "        if (strcmp(argv[i], \"--stdin-file\") == 0 && input_path == NULL) input_path = argv[++i];\n"
+           "        else if (strcmp(argv[i], \"--trace\") == 0 && trace_path == NULL) trace_path = argv[++i];\n"
+           "        else { (void)fputs(\"expected [--stdin-file FILE] [--trace NEW_FILE]\\n\", stderr); return 2; }\n"
+           "    }\n"
            "    (void)input_path;\n"
            "    if (tf_body_program.entry == 0) { (void)fputs(\"error[E208]: missing root main\\n\", stderr); return 1; }\n"
            "#ifdef _WIN32\n"
@@ -363,9 +379,17 @@ static void launcher(Emitter *e) {
            "    tf_context ctx;\n"
            "    if (tf_context_init(&ctx, &tf_value_program, NULL) != TF_OK) return 2;\n"
            "    tf_generated_stack instance = {0};\n"
+           "    TfTraceRecord *records = NULL;\n"
+           "    TfTraceRecorder observer = {0};\n"
            "    tf_value input = tf_unit(), output = tf_unit();\n"
            "    int status = 2;\n"
-           "    if (tf_stack_init(&instance.stack, &ctx, &tf_body_program, ctx.config.call_limit) != TF_OK) goto done;\n");
+           "    if (trace_path != NULL) {\n"
+           "        records = calloc(TF_TRACE_IO_MAX_RECORDS, sizeof *records);\n"
+           "        if (records == NULL) goto done;\n"
+           "        (void)tf_trace_recorder_init(&observer, records, TF_TRACE_IO_MAX_RECORDS);\n"
+           "    }\n"
+           "    if (tf_stack_init(&instance.stack, &ctx, &tf_body_program, ctx.config.call_limit) != TF_OK) goto done;\n"
+           "    instance.stack.observer = trace_path == NULL ? NULL : &observer;\n");
     if (entry!=NULL && entry->kind==TF_CORE_FUNCTION_ENTRY_ONLY) {
         if (input) {
             line(e,"    {\n"
@@ -402,6 +426,11 @@ static void launcher(Emitter *e) {
            "    if (fault != NULL) { tf_show_fault(fault); status = 3; }\n"
            "    else (void)fputs(\"cannot execute verified Core on this host\\n\", stderr);\n"
            "done:\n"
+           "    if (trace_path != NULL && records != NULL &&\n"
+           "        tf_trace_artifact_write(trace_path, &observer, tf_origins, tf_origin_count) != TF_TRACE_IO_OK) {\n"
+           "        (void)fputs(\"cannot write new trace artifact and source map\\n\", stderr); status = 2;\n"
+           "    }\n"
+           "    free(records);\n"
            "    tf_release(&output); tf_release(&input);\n"
            "    tf_stack_destroy(&instance.stack); tf_constants_destroy(instance.pool);\n"
            "    if (fflush(stderr) != 0) status = 2;\n"
@@ -426,7 +455,7 @@ TfStatus tf_c_emit(FILE *out,const TfVerifiedCore *verified) {
                 "#include \"ternfold_rt_stack.h\"\n#include \"ternfold_rt_numeric.h\"\n"
                 "#include \"ternfold_rt_value_ops.h\"\n#include \"ternfold_rt_builtins.h\"\n"
                 "#include \"ternfold_rt_constants.h\"\n#include \"ternfold_rt_callbacks.h\"\n"
-                "#include \"ternfold_rt_io.h\"\n#include <string.h>\n#include <signal.h>\n"
+                "#include \"ternfold_rt_io.h\"\n#include <string.h>\n#include <stdlib.h>\n#include <signal.h>\n"
                 "#ifdef _WIN32\n#include <fcntl.h>\n#include <io.h>\n#endif\n\n");
         if (tf_c_metadata_write(out,verified)!=TF_OK) e.failed=true;
         line(&e,"typedef struct { tf_stack stack; tf_constant_pool *pool; } tf_generated_stack;\n"

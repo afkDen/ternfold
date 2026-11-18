@@ -223,6 +223,30 @@ typedef struct {
     size_t value_count;
 } TfCoreFunction;
 
+/* Optional, immutable observation metadata; not executable operations.
+ * Points occur after after_let preceding definitions have completed in the
+ * named lexical block. Referenced values must be visible at that boundary.
+ * Arrays are sorted by function, then block, then after_let; equal-boundary
+ * points retain source evaluation order. Machine entries are sorted by
+ * function and identify ordinary (old snapshot,input)->Decision functions. */
+typedef enum {
+    TF_CORE_TRACE_WRITER = 1, TF_CORE_TRACE_GUARD, TF_CORE_TRACE_EMISSION
+} TfCoreTraceKind;
+typedef struct {
+    TfCoreFunctionId function;
+    TfCoreTypeId machine;
+    size_t guard_count, emission_count;
+} TfCoreTraceMachine;
+typedef struct {
+    TfCoreFunctionId function;
+    TfCoreBlockId block;
+    size_t after_let;
+    TfCoreValueId value;
+    TfCoreSpanId span;
+    TfCoreTraceKind kind;
+    size_t ordinal; /* one-based source member ordinal */
+} TfCoreTracePoint;
+
 /* Blocks form a lexical tree within each function. Parameters and captures
  * dominate its root; only earlier Lets and enclosing definitions are visible.
  * The operation result is defined after its child blocks. A ListMap evaluates
@@ -245,6 +269,10 @@ typedef struct {
     const TfSpan *spans;
     size_t span_count;
     TfCoreFunctionId entry;
+    const TfCoreTraceMachine *trace_machines;
+    size_t trace_machine_count;
+    const TfCoreTracePoint *trace_points;
+    size_t trace_point_count;
 } TfCoreProgramData;
 
 /* Deep copy the descriptor and all active, counted arrays and bytes; the
@@ -268,5 +296,11 @@ const TfCoreConstant *tf_core_constant(const TfCoreProgramData *data, TfCoreCons
 const TfCoreFunction *tf_core_function(const TfCoreProgramData *data, TfCoreFunctionId id);
 const TfSpan *tf_core_span(const TfCoreProgramData *data, TfCoreSpanId id);
 const TfCoreBlock *tf_core_block(const TfCoreFunction *function, TfCoreBlockId id);
+const TfCoreTraceMachine *tf_core_trace_machine(const TfCoreProgramData *data,
+                                               TfCoreFunctionId function);
+/* Borrowed range; absent block returns NULL and count zero. */
+const TfCoreTracePoint *tf_core_trace_points(const TfCoreProgramData *data,
+                                            TfCoreFunctionId function,
+                                            TfCoreBlockId block, size_t *count);
 
 #endif

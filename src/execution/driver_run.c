@@ -1,6 +1,8 @@
 #include "driver_run.h"
 #include "host_io.h"
+#include "ternfold/trace_artifact.h"
 
+#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #include <fcntl.h>
@@ -53,8 +55,9 @@ bool tf_driver_report_runtime_fault(FILE *stream,const TfCoreProgramData *data,c
     return report(stream,front,format,messages[index].code,messages[index].message,labels,used);
 }
 
-int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
-                    const char *input_path, TfDiagnosticFormat format, const char **failure) {
+int tf_run_verified_traced(const TfVerifiedCore *program, const TfDiagnosticBag *front,
+                    const char *input_path, TfDiagnosticFormat format, const char **failure,
+                    const char *trace_path) {
     const TfCoreProgramData *data=tf_verified_core_data(program);
     const TfCoreFunction *entry=tf_core_function(data,data->entry);
     if (entry==NULL)
@@ -83,11 +86,38 @@ int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
     }
     TfInterpreterResult *result=NULL;
     TfRuntimeFault fault;
-    const TfStatus status=tf_interpret_entry(&result,program,input.lines,input.count,NULL,NULL,&fault);
+    TfTraceRecord *records=trace_path ? calloc(TF_TRACE_IO_MAX_RECORDS,sizeof *records) : NULL;
+    if (trace_path && !records) {
+        tf_input_snapshot_destroy(&input); *failure="cannot allocate trace buffer"; return 2;
+    }
+    TfTraceRecorder trace;
+    (void)tf_trace_recorder_init(&trace,records,trace_path ? TF_TRACE_IO_MAX_RECORDS : 0);
+    const TfStatus status=tf_interpret_entry_traced(&result,program,input.lines,input.count,NULL,NULL,&fault,
+                                                   trace_path ? &trace : NULL);
     tf_input_snapshot_destroy(&input);
+    bool trace_failed=false;
+    if (trace_path) {
+        TfTraceOrigin *origins=data->span_count<=32768 ? calloc(data->span_count+1,sizeof *origins) : NULL;
+        if (!origins) trace_failed=true;
+        else {
+            for (size_t i=0;i<data->span_count;++i) {
+                const TfSpan *s=&data->spans[i];
+                TfLocation start={0},end={0};
+                if (!tf_source_location(s->source,s->start,&start) || !tf_source_location(s->source,s->end,&end)) {
+                    trace_failed=true; break;
+                }
+                origins[i]=(TfTraceOrigin){(const unsigned char *)s->source->name,strlen(s->source->name),
+                                          s->start,s->end,start.line,start.column,end.line,end.column};
+            }
+            if (!trace_failed) trace_failed=tf_trace_artifact_write(trace_path,&trace,origins,data->span_count)!=TF_TRACE_IO_OK;
+            free(origins);
+        }
+    }
+    free(records);
     if (status==TF_SOURCE_ERROR) {
         if (!tf_driver_report_runtime_fault(stderr,data,front,format,fault)) *failure="cannot write runtime diagnostic";
-        return 3;
+        if (trace_failed) *failure="cannot write new trace artifact and source map";
+        return *failure ? 2 : 3;
     }
     if (status!=TF_OK) { *failure="cannot execute verified Core on this host"; return 2; }
     if (tf_diagnostic_bag_write(stderr,front,format,TF_DIAG_COLOR_NEVER)!=TF_OK || fflush(stderr)!=0)
@@ -95,5 +125,11 @@ int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
     else if (tf_interpreter_output_write(stdout,result)!=TF_OK || fflush(stdout)!=0)
         *failure="cannot write program output";
     tf_interpreter_result_destroy(result);
+    if (trace_failed) *failure="cannot write new trace artifact and source map";
     return *failure==NULL ? 0 : 2;
+}
+
+int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
+                    const char *input_path, TfDiagnosticFormat format, const char **failure) {
+    return tf_run_verified_traced(program,front,input_path,format,failure,NULL);
 }

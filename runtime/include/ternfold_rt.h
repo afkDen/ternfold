@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "ternfold/trace_value.h"
 
 /* Native ABI 1 value and ownership slice. Generated C includes this header
  * independently of the compiler's frontend headers. */
@@ -107,6 +108,9 @@ tf_status tf_context_init(tf_context *ctx, const tf_rt_program *program,
 /* NULL until fault; the result and its frame view borrow the context. */
 const tf_fault *tf_context_fault(const tf_context *ctx);
 size_t tf_context_live_bytes(const tf_context *ctx);
+/* Pure borrowed-value inspection for bounded observation; usable after fault.
+ * Does not retain, allocate, call source code or change the context. */
+TfTraceValueAdapter tf_runtime_trace_adapter(tf_context *ctx);
 /* First fault wins. No new frame enters once faulted. Each successful enter
  * must be paired with one leave, including on fault. */
 tf_status tf_context_fail(tf_context *ctx, tf_fault_code code, tf_span_id span);

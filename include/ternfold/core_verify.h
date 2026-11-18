@@ -15,7 +15,8 @@ typedef enum {
     TF_CORE_VERIFY_VALUE,
     TF_CORE_VERIFY_OPERATION,
     TF_CORE_VERIFY_TAG_PROOF,
-    TF_CORE_VERIFY_TERMINATOR
+    TF_CORE_VERIFY_TERMINATOR,
+    TF_CORE_VERIFY_OBSERVATION
 } TfCoreVerifyCode;
 
 /* First malformed-IR finding. Unused IDs are zero. The offending span ID

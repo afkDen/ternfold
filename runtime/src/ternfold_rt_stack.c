@@ -1,6 +1,37 @@
 #include "ternfold_rt_stack.h"
 
 enum { READY, EXECUTING, WAITING, RETURNED };
+
+static void observe(tf_stack *s, tf_stack_frame *f, TfTraceEventKind kind,
+                    tf_span_id span, size_t ordinal, const tf_value *value,
+                    const tf_value *input) {
+    if (!s->observer || !f->trace_invocation) return;
+    TfTracePreview preview={0};
+    if (kind==TF_TRACE_FAULT) {
+        preview.bytes[0]='R'; preview.bytes[1]='0'; preview.bytes[2]='0';
+        preview.bytes[3]=(unsigned char)('0'+ordinal); preview.length=4;
+    } else if (value && s->observer->count<s->observer->capacity) {
+        const TfTraceValueAdapter adapter=tf_runtime_trace_adapter(s->ctx);
+        if (input) tf_trace_preview_pair(&preview,adapter,value,input);
+        else tf_trace_preview(&preview,adapter,value);
+    }
+    const TfTraceEvent event={.kind=kind,.invocation_id=f->trace_invocation,
+        .parent_invocation_id=f->trace_parent,.function_id=f->function,
+        .span_id=span,.ordinal=kind==TF_TRACE_FAULT ? 0 : ordinal};
+    (void)tf_trace_capture(s->observer,&event,preview.bytes,preview.length,preview.incomplete);
+}
+void tf_stack_trace_begin(tf_stack *s, tf_stack_frame *f, tf_span_id origin) {
+    if (!s->observer || f->argc!=2 || f->trace_invocation) return;
+    if (!tf_trace_next_invocation(s->observer,&f->trace_invocation)) return;
+    f->trace_parent=f->trace_active;
+    f->trace_active=f->trace_invocation;
+    f->trace_origin=origin;
+    observe(s,f,TF_TRACE_STEP_BEGIN,origin,0,&f->args[0],&f->args[1]);
+}
+void tf_stack_trace_value(tf_stack *s, tf_stack_frame *f, TfTraceEventKind kind,
+                          tf_span_id origin, size_t ordinal, size_t slot) {
+    if (slot<f->slot_count) observe(s,f,kind,origin,ordinal,&f->slots[slot],NULL);
+}
 typedef enum { ROOT, STATIC, CLOSURE } call_kind;
 
 static tf_status fail(tf_stack *s, tf_fault_code code, tf_span_id span) {
@@ -106,6 +137,7 @@ static tf_status push(tf_stack *s, tf_span_id span, call_kind kind,
         .capture_count = capture_count, .slot_count = b->slot_count,
         .function = target, .span = span, .parent = s->top, .bytes = bytes,
         .destination = destination, .state = READY};
+    f->trace_active=s->top ? s->top->trace_active : 0;
     for (size_t i = 0; i < count; ++i) f->values[i] = tf_unit();
     for (size_t i = 0; i < argc; ++i) {
         if (tf_retain(s->ctx, span, args[i], &f->values[b->slot_count + i]) != TF_OK) {
@@ -208,6 +240,11 @@ tf_status tf_stack_run(tf_stack *s, tf_span_id span, tf_function_id target,
             status = fail(s, TF_R004, f->span);
             break;
         }
+        if (f->trace_invocation) {
+            const tf_value *result=&f->slots[f->returned];
+            const TfTraceValueView view=tf_runtime_trace_adapter(s->ctx).view(s->ctx,result);
+            observe(s,f,view.tag==0 ? TF_TRACE_ACCEPT : TF_TRACE_REJECT,f->trace_origin,0,result,NULL);
+        }
         *destination = f->slots[f->returned]; /* ownership move, never a retain */
         f->slots[f->returned] = tf_unit();
         pop(s);
@@ -219,7 +256,10 @@ tf_status tf_stack_run(tf_stack *s, tf_span_id span, tf_function_id target,
             s->fault.frames = s->trace;
             s->fault.frame_count = s->depth;
         }
-        while (s->top != NULL) pop(s);
+        while (s->top != NULL) {
+            if (fault) observe(s,s->top,TF_TRACE_FAULT,fault->span,(size_t)fault->code,NULL,NULL);
+            pop(s);
+        }
         tf_release(out);
     }
     s->running = false;

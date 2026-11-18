@@ -39,6 +39,8 @@ struct tf_stack_frame {
     tf_stack_frame *parent;
     size_t bytes, destination, returned;
     unsigned state;
+    uint64_t trace_invocation, trace_parent, trace_active;
+    tf_span_id trace_origin;
     /* Optional runtime-owned auxiliary state; released by pop/unwind before
      * slot teardown. Generated bodies leave both fields untouched. */
     void *auxiliary;
@@ -56,7 +58,14 @@ struct tf_stack {
     size_t depth, trace_bytes;
     tf_fault fault;
     bool running;
+    TfTraceRecorder *observer; /* optional host-owned, never a language value */
 };
+
+/* Observation hooks in generated verified code. Calls copy bounded previews;
+ * they cannot fail a program, retain a value or allocate. */
+void tf_stack_trace_begin(tf_stack *stack, tf_stack_frame *frame, tf_span_id origin);
+void tf_stack_trace_value(tf_stack *stack, tf_stack_frame *frame, TfTraceEventKind kind,
+                          tf_span_id origin, size_t ordinal, size_t slot);
 
 /* Borrows ctx and immutable generated tables until destroy. Zero call_limit
  * is valid; callers normally pass ctx->config.call_limit (default 1024).
