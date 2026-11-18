@@ -230,11 +230,14 @@ static void test_incapable_and_mismatch(void) {
             tf_release(&t);
         }
         tf_status status;
+        const size_t before_calls=state.calls;
+        if (which==0) state.fail_at=before_calls+1;
         if (which == 4) status = tf_value_equal(&ctx, 51, a, b, &out);
         else if (which == 5) status = tf_text_concat(&ctx, 51, a, a, &out);
         else if (which == 6) status = tf_list_concat(&ctx, 51, a, a, &out);
         else status = tf_value_equal(&ctx, 51, a, a, &out);
         CHECK(status == TF_FAULT); fault(&ctx, TF_R004, 51, out);
+        if (which==0) CHECK(state.calls==before_calls);
         tf_release(&a); tf_release(&b); tf_release(&fn); empty(&ctx, &state);
     }
 }
