@@ -137,6 +137,56 @@ static void inspect_entry(const TfCoreProgramData *d) {
           result->operation.operands.items[1]==returned->value && b->terminator.value==result->value);
 }
 
+static void inspect_wrappers(const TfCoreProgramData *d) {
+    CHECK(d!=NULL && d->function_count==4 && d->entry==0);
+    const TfCoreFunction *fn=find(d,"use_prelude");
+    const TfCoreBlock *b=tf_core_block(fn,fn->body);
+    const TfCoreFunctionId format=nth(b,0,TF_CORE_OP_CLOSURE)->operation.as.function;
+    const TfCoreFunctionId ints=nth(b,2,TF_CORE_OP_CLOSURE)->operation.as.function;
+    const TfCoreFunctionId chars=nth(b,3,TF_CORE_OP_CLOSURE)->operation.as.function;
+    CHECK(format==nth(b,1,TF_CORE_OP_CLOSURE)->operation.as.function);
+    CHECK(ints!=chars && chars!=format && ints!=format);
+    CHECK(ints==nth(b,8,TF_CORE_OP_CLOSURE)->operation.as.function);
+    const TfCoreFunction *wrapper=tf_core_function(d,format);
+    CHECK(wrapper!=NULL && wrapper->capture_count==0 && wrapper->parameter_count==1);
+    CHECK(nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN)->operation.as.builtin.id==TF_CORE_BUILTIN_INT_TEXT);
+    wrapper=tf_core_function(d,ints);
+    const TfCoreLet *int_len=nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN);
+    wrapper=tf_core_function(d,chars);
+    const TfCoreLet *char_len=nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN);
+    CHECK(int_len->operation.as.builtin.id==TF_CORE_BUILTIN_LEN && char_len->operation.as.builtin.id==TF_CORE_BUILTIN_LEN);
+    CHECK(int_len->operation.as.builtin.type_arguments.count==1 && char_len->operation.as.builtin.type_arguments.count==1);
+    CHECK(tf_core_type(d,int_len->operation.as.builtin.type_arguments.items[0])->kind==TF_CORE_TYPE_INT);
+    CHECK(tf_core_type(d,char_len->operation.as.builtin.type_arguments.items[0])->kind==TF_CORE_TYPE_CHAR);
+}
+
+static void inspect_closures(const TfCoreProgramData *d) {
+    CHECK(d!=NULL && d->function_count==3 && d->entry==0);
+    const TfCoreFunction *source=find(d,"capture");
+    const TfCoreBlock *b=tf_core_block(source,source->body);
+    const TfCoreOperation *outer_op=&nth(b,0,TF_CORE_OP_CLOSURE)->operation;
+    CHECK(outer_op->operands.count==2 && outer_op->operands.items[0]==source->parameters[0].value &&
+          outer_op->operands.items[1]==source->parameters[1].value);
+    CHECK(nth(b,3,TF_CORE_OP_BINARY)->operation.operands.items[1]==source->parameters[0].value);
+    const TfCoreFunction *outer=tf_core_function(d,outer_op->as.function);
+    CHECK(outer!=NULL && outer->capture_count==2 && outer->parameter_count==1 && text_is(outer->name,"$lambda"));
+    CHECK(text_is(outer->captures[0].name,"z") && text_is(outer->captures[1].name,"a"));
+    b=tf_core_block(outer,outer->body);
+    const TfCoreOperation *inner_op=&nth(b,0,TF_CORE_OP_CLOSURE)->operation;
+    CHECK(inner_op->operands.count==3 && inner_op->operands.items[0]==outer->captures[0].value &&
+          inner_op->operands.items[1]==outer->captures[1].value && inner_op->operands.items[2]==outer->parameters[0].value);
+    CHECK(nth(b,2,TF_CORE_OP_BINARY)->operation.operands.items[1]==outer->captures[1].value);
+    const TfCoreFunction *inner=tf_core_function(d,inner_op->as.function);
+    CHECK(inner!=NULL && inner->capture_count==3 && inner->parameter_count==0);
+    CHECK(text_is(inner->captures[0].name,"z") && text_is(inner->captures[1].name,"a") &&
+          text_is(inner->captures[2].name,"delta"));
+    b=tf_core_block(inner,inner->body);
+    const TfCoreOperation *difference=&nth(b,0,TF_CORE_OP_BINARY)->operation;
+    CHECK(difference->as.binary==TF_CORE_BINARY_SUBTRACT && difference->operands.items[0]==inner->captures[1].value &&
+          difference->operands.items[1]==inner->captures[0].value);
+    CHECK(nth(b,1,TF_CORE_OP_BINARY)->operation.operands.items[1]==inner->captures[2].value);
+}
+
 static TfVerifiedCore *verify(TfCoreProgram *program) {
     TfVerifiedCore *verified=NULL;
     TfCoreVerifyIssue issue={0};
@@ -148,14 +198,11 @@ static TfVerifiedCore *verify(TfCoreProgram *program) {
     return verified;
 }
 
-int main(void) {
-    TfSourceManager *manager=NULL;
+static size_t failpoints(Front f) {
     TfCoreProgram *core=NULL;
     TfCoreLowerIssue issue;
     Count count={0};
     const TfAllocator allocator={&count,allocate,deallocate};
-    CHECK(tf_source_manager_create(&manager,NULL)==TF_OK);
-    Front f=prepare(manager,"tests/fixtures/types/core-ordinary.tfd");
     CHECK(tf_core_lower(&core,f.machines,&allocator,&issue)==TF_OK);
     CHECK(core!=NULL && issue.code==TF_CORE_LOWER_NONE);
     const size_t allocations=count.calls;
@@ -165,6 +212,16 @@ int main(void) {
         CHECK(tf_core_lower(&core,f.machines,&allocator,&issue)==TF_HOST_ERROR);
         CHECK(core==NULL && count.live==0 && issue.code==TF_CORE_LOWER_NONE);
     }
+    return allocations;
+}
+
+int main(void) {
+    TfSourceManager *manager=NULL;
+    TfCoreProgram *core=NULL;
+    TfCoreLowerIssue issue;
+    CHECK(tf_source_manager_create(&manager,NULL)==TF_OK);
+    Front f=prepare(manager,"tests/fixtures/types/core-ordinary.tfd");
+    size_t allocations=failpoints(f);
     CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
     release(f); /* Only source snapshots must still be alive. */
     TfVerifiedCore *verified=verify(core);
@@ -178,10 +235,27 @@ int main(void) {
     release(f);
 
     f=prepare(manager,"tests/fixtures/types/core-entry.tfd");
+    allocations+=failpoints(f);
     CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
     release(f);
     verified=verify(core);
     inspect_entry(tf_verified_core_data(verified));
+    tf_verified_core_destroy(verified); tf_core_program_destroy(core);
+
+    f=prepare(manager,"tests/fixtures/types/core-prelude-values.tfd");
+    allocations+=failpoints(f);
+    CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
+    release(f);
+    verified=verify(core);
+    inspect_wrappers(tf_verified_core_data(verified));
+    tf_verified_core_destroy(verified); tf_core_program_destroy(core);
+
+    f=prepare(manager,"tests/fixtures/types/core-closures.tfd");
+    allocations+=failpoints(f);
+    CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
+    release(f);
+    verified=verify(core);
+    inspect_closures(tf_verified_core_data(verified));
     tf_verified_core_destroy(verified); tf_core_program_destroy(core);
     tf_source_manager_destroy(manager);
     printf("Core ordinary lowering: %zu checks, %zu injected allocation failures\n",checks,allocations);

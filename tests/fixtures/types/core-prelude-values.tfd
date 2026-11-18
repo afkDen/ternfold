@@ -1,0 +1,8 @@
+fn use_prelude() -> List[Text] {
+    let show = int_text;
+    let other: fn(Int) -> Text = int_text;
+    let count: fn(List[Int]) -> Int = len;
+    let char_count: fn(List[Char]) -> Int = len;
+    let lengths = map([[1, 2]], len);
+    [show(count([3])), other(char_count(['c'])), int_text(len(lengths))]
+}
