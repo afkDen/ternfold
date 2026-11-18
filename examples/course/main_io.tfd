@@ -8,10 +8,10 @@ fn grid() -> List[List[Int]] {
     }
 }
 pub fn main() -> List[Text] {
-    input visitor: Text from stdin;
+    input visitor: Text;
     let score = polynomial(3);
     let rounded = -7 div 3;
     let letter: Char = 'T';
-    output "Hello " ++ visitor to stdout;
+    output "Hello " ++ visitor;
     [int_text(score), int_text(rounded)]
 }

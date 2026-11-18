@@ -42,6 +42,7 @@ static char work[PATH_CAP], out[PATH_CAP], err[PATH_CAP], input[PATH_CAP], nativ
 #define LF_OK "{\"schema_version\":2,\"diagnostics\":[],\"suppressed\":0,\"has_errors\":false}\n"
 
 typedef struct { char *data; size_t length; } Bytes;
+#include "fixture_json.h"
 typedef struct {
     const char *source, *output;
     size_t output_size;
@@ -611,24 +612,58 @@ static void library_rejections(const char *compiler,const char *cc,const char *r
 
 /* Probe actual stopping points. A later command must reject the same source
  * without exposing a partial dump, result, or output file. */
-static void stage_boundaries(const char *compiler,const char *cc,const char *root) {
-    static const struct { const char *input, *code, *earlier; } rows[]={
-        {"pub fn main() -> List[Text] { [@] }","E101",NULL},
-        {"pub fn main() -> List[Text] { [\"x\" }","E110","tokens"},
-        {"pub fn main() -> List[Text] { [missing] }","E203","ast"},
-        {"pub fn main() -> List[Text] { [true] }","E302","ast"}
+static void require_diagnostic(const char *code,const char *spelling,size_t start) {
+    const Bytes bytes=read_bytes(err);
+    Json json={0};
+    json.t=calloc(JSON_TOKENS,sizeof *json.t);
+    CHECK(json.t && jparse(&json,bytes.data,bytes.length));
+    CHECK(jnumber(&json,jfield(&json,0,"schema_version"))==2);
+    CHECK(jnumber(&json,jfield(&json,0,"suppressed"))==0);
+    const size_t errors=jfield(&json,0,"has_errors");
+    CHECK(errors<json.count && json.t[errors].type=='t');
+    const size_t list=jfield(&json,0,"diagnostics");
+    CHECK(list+1<json.count && json.t[list].type=='[' &&
+          json.t[list+1].next==json.t[list].next);
+    CHECK(jequal(&json,jfield(&json,list+1,"code"),code));
+    CHECK(jequal(&json,jfield(&json,list+1,"severity"),"error"));
+    const size_t labels=jfield(&json,list+1,"labels");
+    CHECK(labels+1<json.count && json.t[labels].type=='[');
+    size_t primary_count=0;
+    for (size_t t=labels+1;t<json.t[labels].next;t=json.t[t].next) {
+        const size_t primary=jfield(&json,t,"primary");
+        CHECK(primary<json.count && (json.t[primary].type=='t' || json.t[primary].type=='f'));
+        if (json.t[primary].type!='t') continue;
+        ++primary_count;
+        const size_t span=jfield(&json,t,"span");
+        CHECK(jnumber(&json,jfield(&json,span,"start_byte"))==start);
+        CHECK(jnumber(&json,jfield(&json,span,"end_byte"))==start+strlen(spelling));
+        CHECK(jequal(&json,jfield(&json,span,"source_text"),spelling));
+    }
+    CHECK(primary_count==1);
+    free(json.t);
+    free(bytes.data);
+}
+
+static void stage_boundaries(const char *compiler,const char *sentinel,const char *root) {
+    static const struct { const char *input, *code, *earlier, *spelling; size_t start; } rows[]={
+        {"pub fn main() -> List[Text] { [@] }","E101",NULL,"@",31},
+        {"pub fn main() -> List[Text] { [\"x\" }","E110","tokens","",35},
+        {"pub fn main() -> List[Text] { [missing] }","E203","ast","missing",31},
+        {"pub fn main() -> List[Text] { [true] }","E302","ast","true",31},
+        {NULL,"E404","ast","next.a",133}
     };
     static const char *const later[]={"check","plan","core","run","emit-c","build"};
-    char source[PATH_CAP];
+    static const char old[]="existing output\0must survive";
+    char source[PATH_CAP], emitted[PATH_CAP];
     join(source,work,"boundary.tfd");
-    for (size_t i=0;i<=sizeof rows/sizeof *rows;++i) {
-        const bool cycle=i==sizeof rows/sizeof *rows;
-        const char *code=cycle ? "E404" : rows[i].code;
-        current=code;
+    join(emitted,work,"should-not-publish.c");
+    for (size_t i=0;i<sizeof rows/sizeof *rows;++i) {
+        const bool cycle=rows[i].input==NULL;
+        current=rows[i].code;
         const char *file=cycle ? "examples/invalid/candidate_cycle.tfd" : source;
         const char *module_root=cycle ? "examples" : work;
         if (!cycle) write_bytes(source,rows[i].input,strlen(rows[i].input));
-        const char *earlier=cycle ? "ast" : rows[i].earlier;
+        const char *earlier=rows[i].earlier;
         if (earlier) {
             const char *args[]={compiler,earlier,file,"--diagnostics-json",NULL};
             run(args,0);
@@ -636,19 +671,24 @@ static void stage_boundaries(const char *compiler,const char *cc,const char *roo
             CHECK(dump.length>0);
             free(dump.data); expect(err,LF_OK,sizeof LF_OK-1);
         }
-        char key[32];
-        const int length=snprintf(key,sizeof key,"\"code\":\"%s\"",code);
-        CHECK(length>0 && (size_t)length<sizeof key);
         for (size_t j=0;j<sizeof later/sizeof *later;++j) {
-            const bool native_build=strcmp(later[j],"build")==0;
+            const bool builds=strcmp(later[j],"build")==0, emits=strcmp(later[j],"emit-c")==0;
+            const char *target=builds ? native : emits ? emitted : NULL;
             const char *args[]={compiler,later[j],file,"--root",module_root,"--diagnostics-json",
-                                native_build ? "-o" : NULL,native_build ? native : NULL,
-                                "--cc",cc,"--runtime-root",root,NULL};
-            run(args,1); expect(out,"",0); contains(err,key); absent(native);
+                                target ? "-o" : NULL,target,
+                                builds ? "--cc" : NULL,sentinel,"--runtime-root",root,NULL};
+            run(args,1); expect(out,"",0);
+            require_diagnostic(rows[i].code,rows[i].spelling,rows[i].start);
+            if (target) {
+                absent(target); write_bytes(target,old,sizeof old-1);
+                run(args,1); expect(out,"",0); expect(target,old,sizeof old-1);
+                require_diagnostic(rows[i].code,rows[i].spelling,rows[i].start);
+                CHECK(remove(target)==0);
+            }
         }
     }
     CHECK(remove(source)==0);
-    printf("stage boundaries: 5 diagnostic classes, 30 blocked later commands\n");
+    printf("stage boundaries: 5 exact diagnostic sets, 40 blocked later commands\n");
 }
 
 static void perturb_environment(unsigned attempt) {
@@ -729,7 +769,7 @@ int main(int argc, char **argv) {
     bad_builds(argv[1],argv[2],argv[3],argv[0],argc==5);
     source_alias(argv[1],argv[2],argv[3],argc==5);
     library_rejections(argv[1],argv[2],argv[3],argc==5);
-    stage_boundaries(argv[1],argv[2],argv[3]);
+    stage_boundaries(argv[1],argv[0],argv[3]);
     reproducible_pipeline(argv[1],argv[2],argv[3],argc==5);
     current="cleanup";
     stage_library(true);
