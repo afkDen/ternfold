@@ -10,6 +10,10 @@ struct Allocation {
 };
 
 typedef const TfCoveragePattern *const *Row;
+typedef struct { const Row *rows; Row roots; } Matrix;
+static Row matrix_row(Matrix matrix, size_t i) {
+    return matrix.rows != NULL ? matrix.rows[i] : matrix.roots+i;
+}
 typedef struct {
     const TfCoverageDomain *domain;
     const TfCoveragePattern *pattern;
@@ -77,13 +81,18 @@ static const TfCoveragePattern *make_pattern(Search *s, const TfCoverageConstruc
 /* The public depth bound protects both matrix recursion and deep copies of
  * externally constructed queries. It is a host resource failure, never a
  * successful coverage decision. */
-enum { MAX_DEPTH = 512 };
+enum { MAX_PATTERN_DEPTH = 512, MAX_SPECIALIZATIONS = 192 };
+static bool singleton_nullary(const TfCoverageDomain *domain) {
+    return domain->count == 1 && domain->constructors[0]->arity == 0;
+}
+
 static bool covers(Search *s, const TfCoveragePattern *cover, const TfCoveragePattern *query,
                    size_t depth) {
     if (!spend(s,1)) return false;
     if (cover == NULL || cover == query) return true;
-    if (query == NULL || cover->constructor != query->constructor) return false;
-    if (depth == MAX_DEPTH) { s->failed = true; return false; }
+    if (query == NULL) return singleton_nullary(cover->constructor->domain);
+    if (cover->constructor != query->constructor) return false;
+    if (depth == MAX_PATTERN_DEPTH) { s->failed = true; return false; }
     for (size_t i=0; i<cover->constructor->arity; ++i)
         if (!covers(s,cover->arguments[i],query->arguments[i],depth+1)) return false;
     return true;
@@ -92,7 +101,7 @@ static const TfCoveragePattern *copy_pattern(Search *s, const TfCoveragePattern 
                                              size_t depth) {
     const TfCoveragePattern **args = NULL;
     if (pattern == NULL || s->failed) return NULL;
-    if (depth == MAX_DEPTH) { s->failed = true; return NULL; }
+    if (depth == MAX_PATTERN_DEPTH) { s->failed = true; return NULL; }
     if (pattern->constructor->arity != 0) {
         args = allocate(s,&s->result->owned,pattern->constructor->arity,sizeof *args);
         if (args == NULL) return NULL;
@@ -102,12 +111,12 @@ static const TfCoveragePattern *copy_pattern(Search *s, const TfCoveragePattern 
     return make_pattern(s,pattern->constructor,args);
 }
 
-static bool useful(Search *s, const Row *matrix, size_t rows, const Column *query,
+static bool useful(Search *s, Matrix matrix, size_t rows, const Column *query,
                    size_t columns, size_t depth, WitnessItem **out);
 
 /* Specialize the most constrained column. Keep all other columns in their
  * original order and restore the removed column in the resulting witness. */
-static bool specialize(Search *s, const Row *matrix, size_t rows, const Column *query,
+static bool specialize(Search *s, Matrix matrix, size_t rows, const Column *query,
                        size_t columns, size_t chosen, size_t depth, const TfCoverageConstructor *ctor,
                        WitnessItem **out) {
     Allocation *mark = s->scratch;
@@ -130,27 +139,29 @@ static bool specialize(Search *s, const Row *matrix, size_t rows, const Column *
     if (chosen+1 < columns)
         memcpy(new_query+arity+chosen,query+chosen+1,(columns-chosen-1)*sizeof *new_query);
     for (size_t i=0; i<rows; ++i) {
-        const TfCoveragePattern *head = matrix[i][chosen];
+        Row previous = matrix_row(matrix,i);
+        const TfCoveragePattern *head = previous[chosen];
         const TfCoveragePattern **row;
         if (head != NULL && head->constructor != ctor) continue;
-        if (arity == 0 && chosen == 0) { new_rows[count++] = matrix[i]+1; continue; }
+        if (arity == 0 && chosen == 0) { new_rows[count++] = previous+1; continue; }
         row = allocate(s,&s->scratch,width,sizeof *row);
         if (row == NULL) goto done;
         for (size_t j=0; j<arity; ++j) row[j] = head != NULL ? head->arguments[j] : NULL;
-        if (chosen != 0) memcpy(row+arity,matrix[i],chosen*sizeof *row);
+        if (chosen != 0) memcpy(row+arity,previous,chosen*sizeof *row);
         if (chosen+1 < columns)
-            memcpy(row+arity+chosen,matrix[i]+chosen+1,(columns-chosen-1)*sizeof *row);
+            memcpy(row+arity+chosen,previous+chosen+1,(columns-chosen-1)*sizeof *row);
         new_rows[count++] = row;
     }
-    found = useful(s,new_rows,count,new_query,width,depth+1,&witness);
+    found = useful(s,(Matrix){.rows=new_rows},count,new_query,width,depth+1,&witness);
     if (found) {
         const TfCoveragePattern *head = NULL;
         if (ctor != NULL) {
             const TfCoveragePattern **args = NULL;
             if (arity != 0) {
                 args = allocate(s,&s->result->owned,arity,sizeof *args);
-                if (args == NULL) goto done;
+                if (args == NULL) { s->failed = true; goto done; }
                 for (size_t i=0; i<arity; ++i) {
+                    if (witness == NULL) { s->failed = true; goto done; }
                     args[i] = witness->pattern;
                     witness = witness->next;
                 }
@@ -159,7 +170,10 @@ static bool specialize(Search *s, const Row *matrix, size_t rows, const Column *
         }
         {
             WitnessItem **place = &witness;
-            for (size_t i=0; i<chosen; ++i) place = &(*place)->next;
+            for (size_t i=0; i<chosen; ++i) {
+                if (*place == NULL) { s->failed = true; goto done; }
+                place = &(*place)->next;
+            }
             *place = prepend(s,head,*place);
             *out = witness;
         }
@@ -169,10 +183,11 @@ done:
     return found && !s->failed;
 }
 
-static bool useful(Search *s, const Row *matrix, size_t rows, const Column *query,
+static bool useful(Search *s, Matrix matrix, size_t rows, const Column *query,
                    size_t columns, size_t depth, WitnessItem **out) {
-    size_t chosen = 0, best = 0;
-    if (s->failed || depth == MAX_DEPTH) { s->failed = true; return false; }
+    size_t chosen = 0, best = 0, concrete_column = 0, compatible = rows;
+    bool has_concrete = false, selects_payload = false;
+    if (s->failed || depth == MAX_SPECIALIZATIONS) { s->failed = true; return false; }
     *out = NULL;
     if (rows == 0) {
         /* A symbolic wildcard is a valid residual wherever no row covers it.
@@ -185,21 +200,57 @@ static bool useful(Search *s, const Row *matrix, size_t rows, const Column *quer
     }
     for (size_t i=0; i<rows; ++i) {
         size_t j = 0;
-        while (j<columns && covers(s,matrix[i][j],query[j].pattern,0)) ++j;
+        const Row row = matrix_row(matrix,i);
+        while (j<columns && covers(s,row[j],query[j].pattern,0)) ++j;
         if (s->failed || j==columns) return false; /* This row subsumes the query. */
     }
     for (size_t j=0; j<columns; ++j) {
         size_t concrete = 0;
-        if (query[j].pattern != NULL)
-            return specialize(s,matrix,rows,query,columns,j,depth,query[j].pattern->constructor,out);
+        /* A Unit or singleton nullary enum column cannot distinguish rows. */
+        if (singleton_nullary(query[j].domain)) continue;
         if (!spend(s,rows)) return false;
-        for (size_t i=0; i<rows; ++i) if (matrix[i][j] != NULL) ++concrete;
+        if (query[j].pattern != NULL) {
+            const TfCoverageConstructor *ctor = query[j].pattern->constructor;
+            size_t survives = 0;
+            for (size_t i=0; i<rows; ++i) {
+                const TfCoveragePattern *pattern = matrix_row(matrix,i)[j];
+                if (pattern == NULL || pattern->constructor == ctor) ++survives;
+            }
+            if (survives == 0)
+                return specialize(s,(Matrix){0},0,query,columns,j,depth,ctor,out);
+            if (!has_concrete || survives < compatible ||
+                (survives == compatible && !selects_payload && ctor->arity != 0)) {
+                concrete_column = j;
+                compatible = survives;
+                has_concrete = true;
+                selects_payload = ctor->arity != 0;
+            }
+            continue;
+        }
+        for (size_t i=0; i<rows; ++i) if (matrix_row(matrix,i)[j] != NULL) ++concrete;
         if (concrete > best) { best = concrete; chosen = j; }
     }
+    /* Avoid walking shared nullary prefixes one frame at a time. A concrete
+     * query which removes rows or expands a payload exposes useful work. */
+    if (has_concrete && (compatible < rows || selects_payload || best == 0))
+        return specialize(s,matrix,rows,query,columns,concrete_column,depth,
+                          query[concrete_column].pattern->constructor,out);
+    if (best == 0) { s->failed = true; return false; } /* An unconstrained row subsumes above. */
     /* At least one column is constrained; all-wildcard rows returned above.
      * A sparse wide payload therefore consumes depth only on its constraints. */
     if (query[chosen].domain->count == 0)
         return specialize(s,matrix,rows,query,columns,chosen,depth,NULL,out);
+    if (best == rows) {
+        /* Every previous row constrains this column. A missing constructor
+         * proves usefulness immediately, even when a present constructor
+         * would require inspecting hundreds of remaining columns. */
+        for (size_t i=0; i<query[chosen].domain->count && spend(s,rows); ++i) {
+            const TfCoverageConstructor *ctor = query[chosen].domain->constructors[i];
+            size_t j = 0;
+            while (j<rows && matrix_row(matrix,j)[chosen]->constructor != ctor) ++j;
+            if (j==rows) return specialize(s,(Matrix){0},0,query,columns,chosen,depth,ctor,out);
+        }
+    }
     for (size_t i=0; i<query[chosen].domain->count && spend(s,1); ++i)
         if (specialize(s,matrix,rows,query,columns,chosen,depth,query[chosen].domain->constructors[i],out))
             return true;
@@ -209,27 +260,35 @@ static bool useful(Search *s, const Row *matrix, size_t rows, const Column *quer
 TfStatus tf_coverage_witness(TfCoverageWitness **out, const TfCoverageDomain *domain,
                              const TfCoveragePattern *const *previous, size_t count,
                              const TfCoveragePattern *query, const TfAllocator *allocator) {
+    size_t remaining = TF_COVERAGE_WORK;
+    return tf_coverage_witness_budget(out,domain,previous,count,query,allocator,&remaining);
+}
+
+TfStatus tf_coverage_witness_budget(TfCoverageWitness **out, const TfCoverageDomain *domain,
+                                    const TfCoveragePattern *const *previous, size_t count,
+                                    const TfCoveragePattern *query, const TfAllocator *allocator,
+                                    size_t *remaining) {
     const TfAllocator a = tf_allocator(allocator);
     const Column column = {domain,query};
     WitnessItem *root = NULL;
     Search search = {0};
-    Row *rows;
     bool found;
     if (out == NULL) return TF_HOST_ERROR;
     *out = NULL;
-    if (domain == NULL || (count != 0 && previous == NULL) || !tf_allocator_valid(a))
+    if (domain == NULL || remaining == NULL || (count != 0 && previous == NULL) || !tf_allocator_valid(a))
         return TF_HOST_ERROR;
-    search.work_left = (size_t)8*1024*1024;
+    search.work_left = *remaining;
     search.result = a.allocate(a.context,sizeof *search.result);
     if (search.result == NULL) return TF_HOST_ERROR;
     *search.result = (TfCoverageWitness){a,NULL,NULL};
-    rows = allocate(&search,&search.scratch,count,sizeof *rows);
-    if (rows != NULL)
-        for (size_t i=0; i<count; ++i) rows[i] = previous+i;
-    found = useful(&search,rows,count,&column,1,0,&root);
+    found = useful(&search,(Matrix){.roots=previous},count,&column,1,0,&root);
+    *remaining = search.work_left;
     release_to(a,&search.scratch,NULL);
-    if (found) { search.result->root = root->pattern; *out = search.result; }
-    else tf_coverage_destroy(search.result);
+    if (found && root != NULL) { search.result->root = root->pattern; *out = search.result; }
+    else {
+        if (found) search.failed = true;
+        tf_coverage_destroy(search.result);
+    }
     return search.failed ? TF_HOST_ERROR : TF_OK;
 }
 

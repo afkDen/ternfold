@@ -18,6 +18,7 @@ TfStatus tf_signatures_build(TfTypedSignatures **out, const TfResolution *resolu
                              size_t diagnostic_cap, const TfAllocator *allocator);
 void tf_signatures_destroy(TfTypedSignatures *signatures);
 const TfDiagnosticBag *tf_signatures_diagnostics(const TfTypedSignatures *signatures);
+const TfResolution *tf_signatures_resolution(const TfTypedSignatures *signatures);
 TfTypeStore *tf_signatures_store(TfTypedSignatures *signatures);
 /* Returns absent for local binders, generic prelude callables, and foreign IDs.
  * Constructor signatures describe direct construction; they do not permit

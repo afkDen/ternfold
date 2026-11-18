@@ -4,6 +4,8 @@
 #include "ternfold/parser.h"
 #include "ternfold/ast_dump.h"
 #include "ternfold/resolve.h"
+#include "ternfold/check.h"
+#include "typed_signatures.h"
 
 #include <signal.h>
 #include <string.h>
@@ -23,7 +25,10 @@ static bool extension(const char *path) {
 static int check_source(const char *path, const char *root, TfDiagnosticFormat format) {
     TfSourceManager *manager = NULL;
     TfResolution *resolution = NULL;
+    TfTypedSignatures *signatures = NULL;
+    TfTypedProgram *typed = NULL;
     TfResolveOptions options = {root, 100};
+    const TfDiagnosticBag *shown;
     const char *failure = NULL;
     int code = 2;
     if (tf_source_manager_create(&manager,NULL) != TF_OK ||
@@ -31,14 +36,32 @@ static int check_source(const char *path, const char *root, TfDiagnosticFormat f
         failure = "cannot resolve source (read/path capability, resource limit or allocation failure)";
         goto done;
     }
-    code = tf_diagnostic_bag_has_errors(tf_resolution_diagnostics(resolution)) ? 1 : 0;
-    if (tf_diagnostic_bag_write(stderr,tf_resolution_diagnostics(resolution),format,
+    shown = tf_resolution_diagnostics(resolution);
+    if (!tf_diagnostic_bag_has_errors(shown)) {
+        if (tf_signatures_build(&signatures,resolution,100,NULL) != TF_OK) {
+            failure = "cannot build type signatures (resource limit or allocation failure)";
+            goto done;
+        }
+        shown = tf_signatures_diagnostics(signatures);
+        if (!tf_diagnostic_bag_has_errors(shown)) {
+            if (tf_check(&typed,resolution,signatures,100,NULL) != TF_OK ||
+                tf_diagnostic_phase_kind(tf_typed_program_phase(typed)) == TF_DIAG_PHASE_INVALID) {
+                failure = "cannot check types (host arithmetic capability, resource limit or allocation failure)";
+                goto done;
+            }
+            shown = tf_typed_program_diagnostics(typed);
+        }
+    }
+    code = tf_diagnostic_bag_has_errors(shown) ? 1 : 0;
+    if (tf_diagnostic_bag_write(stderr,shown,format,
                                 TF_DIAG_COLOR_NEVER) != TF_OK || fflush(stderr) != 0)
         failure = "cannot write diagnostics";
-    else if (code == 0 && (fputs("Name resolution succeeded; types and later phases were not checked.\n",
+    else if (code == 0 && (fputs("Type checking succeeded; machine scheduling and later phases were not checked.\n",
                                  stdout) == EOF || fflush(stdout) != 0))
         failure = "cannot write check result";
 done:
+    tf_typed_program_destroy(typed);
+    tf_signatures_destroy(signatures);
     tf_resolution_destroy(resolution);
     tf_source_manager_destroy(manager);
     return failure != NULL ? driver_error(failure,2) : code;
@@ -66,14 +89,14 @@ int main(int argc, char **argv) {
                   "Options follow source, in any order, once each. DIR must already exist.\n"
                   "       ternfold ast source.tfd [--json] [--diagnostics-json]\n"
                   "       ternfold check source.tfd [--root DIR] [--diagnostics-json]\n"
-                  "Check stops after name resolution; run/compile are unavailable.\n"
+                  "Check stops after type checking; machine scheduling and run/compile are unavailable.\n"
                   "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
                   "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
                   "Paths follow native SourceManager capabilities (Windows ANSI, queryable insensitive ancestors).\n"
                   "AST JSON schema v1 uses stable node IDs; recovery trees are inspection only.\n"
                   "Invalid source: AST root=null, has_errors=true, empty nodes (no invented syntax).\n"
-                  "Exit: 0 syntax/lexical success, 1 diagnosed input error, 2 usage/host/output failure.\n",stdout) == EOF ||
+                  "Exit: 0 requested phase succeeded, 1 diagnosed input error, 2 usage/host/output failure.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
     }

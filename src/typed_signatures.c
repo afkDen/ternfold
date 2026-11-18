@@ -378,6 +378,9 @@ void tf_signatures_destroy(TfTypedSignatures *s) {
 const TfDiagnosticBag *tf_signatures_diagnostics(const TfTypedSignatures *s) {
     return s == NULL ? NULL : s->diagnostics;
 }
+const TfResolution *tf_signatures_resolution(const TfTypedSignatures *s) {
+    return s == NULL ? NULL : s->resolution;
+}
 TfTypeStore *tf_signatures_store(TfTypedSignatures *s) { return s == NULL ? NULL : s->store; }
 TfConcreteTypeId tf_signatures_symbol(const TfTypedSignatures *s, TfSymbolId symbol) {
     if (s == NULL || tf_resolution_symbol(s->resolution,symbol) == NULL)

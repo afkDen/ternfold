@@ -32,10 +32,16 @@ typedef struct TfCoverageWitness TfCoverageWitness;
  * The witness root may itself be NULL for a symbolic residual wildcard.
  * HOST_ERROR publishes nothing, including on work or stack limits.
  * Search caps charged cells and allocations at 8 Mi units and recursive
- * specializations at 512 (distinct from parser syntax nesting). */
+ * specializations at 192 (distinct from parser syntax nesting). */
 TfStatus tf_coverage_witness(TfCoverageWitness **out, const TfCoverageDomain *domain,
                              const TfCoveragePattern *const *previous, size_t count,
                              const TfCoveragePattern *query, const TfAllocator *allocator);
+enum { TF_COVERAGE_WORK = 8*1024*1024 };
+/* As above, drawing from a budget shared by all queries in one match. */
+TfStatus tf_coverage_witness_budget(TfCoverageWitness **out, const TfCoverageDomain *domain,
+                                    const TfCoveragePattern *const *previous, size_t count,
+                                    const TfCoveragePattern *query, const TfAllocator *allocator,
+                                    size_t *remaining);
 const TfCoveragePattern *tf_coverage_root(const TfCoverageWitness *witness);
 void tf_coverage_destroy(TfCoverageWitness *witness);
 
