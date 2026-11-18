@@ -1,0 +1,43 @@
+// Ordinary local source module; public contracts: docs/standard-library.md.
+pub fn join(parts: List[Text], separator: Text) -> Text {
+    let initial: Option[Text] = Option::None;
+    let joined = fold(parts, initial,
+        fn(previous: Option[Text], part: Text) -> Option[Text] {
+            match previous {
+                Option::None => { Option::Some(part) },
+                Option::Some(prefix) => { Option::Some(prefix ++ separator ++ part) }
+            }
+        });
+    match joined {
+        Option::None => { "" },
+        Option::Some(value) => { value }
+    }
+}
+
+record LineScan { finished: List[Text], current: Text }
+
+pub fn lines(value: Text) -> List[Text] {
+    let scan = fold(range(0, text_len(value)),
+        LineScan(finished: [], current: ""),
+        fn(previous: LineScan, index: Int) -> LineScan {
+            match text_at(value, index) {
+                Option::Some(scalar) => {
+                    if scalar == "\n" {
+                        LineScan(finished: append(previous.finished, previous.current),
+                                 current: "")
+                    } else {
+                        LineScan(finished: previous.finished,
+                                 current: previous.current ++ scalar)
+                    }
+                },
+                // Unreachable: range supplies exactly the valid scalar indices.
+                Option::None => { previous }
+            }
+        });
+    if scan.current == "" { scan.finished }
+    else { append(scan.finished, scan.current) }
+}
+
+pub fn unlines(parts: List[Text]) -> Text {
+    fold(parts, "", fn(prefix: Text, part: Text) -> Text { prefix ++ part ++ "\n" })
+}

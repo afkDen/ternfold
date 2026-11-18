@@ -1,0 +1,26 @@
+// Ordinary local source module; public contracts: docs/standard-library.md.
+pub record Summary { count: Int, total: Int, minimum: Int, maximum: Int }
+
+pub fn sum(values: List[Int]) -> Int {
+    fold(values, 0, fn(total: Int, value: Int) -> Int { total + value })
+}
+
+fn accumulate(previous: Option[Summary], value: Int) -> Option[Summary] {
+    match previous {
+        Option::None => {
+            Option::Some(Summary(count: 1, total: value, minimum: value, maximum: value))
+        },
+        Option::Some(held) => {
+            let count = held.count + 1;
+            let total = held.total + value;
+            let minimum = if value < held.minimum { value } else { held.minimum };
+            let maximum = if value > held.maximum { value } else { held.maximum };
+            Option::Some(Summary(count: count, total: total, minimum: minimum, maximum: maximum))
+        }
+    }
+}
+
+pub fn summary(values: List[Int]) -> Option[Summary] {
+    let initial: Option[Summary] = Option::None;
+    fold(values, initial, accumulate)
+}
