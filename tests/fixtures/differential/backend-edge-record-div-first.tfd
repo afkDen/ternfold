@@ -1,0 +1,7 @@
+record Pair { left: Int, right: Int }
+
+pub fn main() -> List[Text] {
+    output "private";
+    let pair = Pair(right: 7 div 0, left: 9223372036854775807 + 1);
+    [int_text(pair.left)]
+}

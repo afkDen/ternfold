@@ -1,0 +1,546 @@
+/* Run from the repository root: test_differential COMPILER CC RUNTIME_ROOT [--sanitize].
+ * See tests/test_tokens_cli.c for the corresponding direct process runner. */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include <errno.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <direct.h>
+#define MAKE_DIR(p) _mkdir(p)
+#define REMOVE_DIR(p) _rmdir(p)
+#define EXE ".exe"
+#else
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#define MAKE_DIR(p) mkdir(p, 0700)
+#define REMOVE_DIR(p) rmdir(p)
+#define EXE ""
+#endif
+
+enum { PATH_CAP = 4096, BYTE_CAP = 128 * 1024, TIMEOUT_MS = 60000 };
+static const char scratch[] = "tmp/m11-differential";
+static const char *current;
+static char work[PATH_CAP], out[PATH_CAP], err[PATH_CAP], input[PATH_CAP], native[PATH_CAP];
+
+#define CHECK(ok) do { if (!(ok)) { \
+    fprintf(stderr,"differential:%d: %s (%s); captures in %s\n",__LINE__,#ok,current,work); \
+    exit(1); \
+} } while (0)
+#define FIX "tests/fixtures/differential/"
+#define M09 "tests/fixtures/types/"
+#define LF_OK "{\"schema_version\":2,\"diagnostics\":[],\"suppressed\":0,\"has_errors\":false}\n"
+
+typedef struct { char *data; size_t length; } Bytes;
+typedef struct {
+    const char *source, *output;
+    size_t output_size;
+    const char *stdin_bytes;
+    size_t stdin_size;
+    const char *code, *origin_file, *context;
+    size_t origin_offset, origin_size;
+    bool bad_input;
+} Case;
+
+#define OK(path, bytes) {.source=path,.output=bytes,.output_size=sizeof(bytes)-1}
+#define IO(path, bytes, data) \
+    {.source=path,.output=bytes,.output_size=sizeof(bytes)-1,.stdin_bytes=data,.stdin_size=sizeof(data)-1}
+#define FAULT(path, fault, file, anchor, offset, spelling) \
+    {.source=path,.output="",.code=fault,.origin_file=file,.context=anchor, \
+     .origin_offset=offset,.origin_size=sizeof(spelling)-1}
+/* The fixture's context uniquely identifies the expected source occurrence.
+ * Offsets are byte offsets within that context (not diagnostic line columns). */
+static const Case cases[] = {
+    OK("examples/intro/hello.tfd","Hello, Ternfold.\n"),
+    OK("examples/intro/counter.tfd","4\n"),
+    OK("examples/features/snapshot_swap.tfd","9\n2\n"),
+    OK("examples/features/dependency_order.tfd","14\n"),
+    OK("examples/features/guard_short_circuit.tfd","first reason\n0\n"),
+    OK("examples/features/fold_and_closure.tfd","46\n"),
+    OK("examples/features/nested_patterns.tfd","on\nmissing\n"),
+    OK("examples/features/unicode.tfd","3\nNUL follows: \0end\n"),
+    OK("examples/boundaries/checked_division.tfd","-3\n-1\n1\n"),
+    FAULT("examples/boundaries/candidate_fault.tfd","R002",NULL,"1 div request",2,"div"),
+    FAULT("examples/boundaries/minimum_overflow.tfd","R001",NULL,"minimum div -1",8,"div"),
+    OK("examples/course/automata.tfd","Ternfold\n-3\n"),
+    IO("examples/course/main_io.tfd","Hello Ada\n26\n-3\n","Ada\r\nextra\n"),
+    OK("examples/course/operator_inventory.tfd","3.5e0\n3\n1\n8\ntrue\n"),
+    OK("examples/showcase/branching_inventory.tfd",
+       "Ternfold: inspect a change before accepting it\naccepted count=7\nfree=3\n"
+       "rejected capacity; count=7\noriginal still=3\naccepted count=4\nfree=6\n"),
+    OK(M09 "interpreter-core.tfd","accepted\nold snapshot\nrejected\nchecked\na\0b\n"),
+    OK(M09 "interpreter-prelude.tfd",
+       "-2\n-1\n0\n3\n123\n7\n0\n8\nnone\n-9223372036854775808\nnone\nnone\nnone\n-2\n"
+       "1.0000000000000001e-1\n4.9406564584124654e-324\n4\n\xf0\x9f\x99\x82\n\0b\n\nnone\nfalse\n"),
+    FAULT(M09 "interpreter-candidate-order.tfd","R001",NULL,"9223372036854775807 + 1",20,"+"),
+    FAULT(M09 "interpreter-late-guard.tfd","R002",NULL,"guard 1 div 0",8,"div"),
+    FAULT(M09 "interpreter-late-emission.tfd","R002",NULL,"emit int_text(1 div 0)",16,"div"),
+    FAULT(M09 "interpreter-negative-power.tfd","R005",NULL,"2 ^ -1",2,"^"),
+    {.source=M09 "interpreter-fault.tfd",.output="",.stdin_bytes="first\n",.stdin_size=6,
+     .code="R006",.context="input second: Text;",.origin_size=sizeof("input second: Text;")-1},
+    {.source=M09 "interpreter-fault.tfd",.output="",.stdin_bytes="first\nsecond",.stdin_size=12,
+     .code="R002",.context="1 div 0",.origin_offset=2,.origin_size=3},
+    {.source=M09 "interpreter-fault.tfd",.output="",.stdin_bytes="\xc0\x80",.stdin_size=2,.bad_input=true},
+    /* Each executor must report its own documented limit at the source
+     * invocation. We do not compare allocation counts or active frame depth. */
+    FAULT(M09 "interpreter-recursion.tfd","R003",NULL,"recurse(x + 1)",0,"recurse(x + 1)"),
+    FAULT(M09 "core-wrapper-root.tfd","R003",NULL,"r(-9223372036854775808, 1)",0,"r(-9223372036854775808, 1)"),
+    IO(FIX "input & snapshot.tfd","first=A\0da\nempty=\nlast=fin\ral\r\nquote: \" slash: \\ tab: \t NUL: \0end\n",
+       "A\0da\r\n\r\nfin\ral\r"),
+    {.source=FIX "input & snapshot.tfd",.output="",.stdin_bytes="one\n\n",.stdin_size=5,
+     .code="R006",.context="input last: Text;",.origin_size=sizeof("input last: Text;")-1},
+    OK(FIX "numeric.tfd","-9223372036854775808\n9223372036854775807\n-3\n-1\n1\n1.25e0\n"
+       "true\ntrue\n4.9406564584124654e-324\n0.0e0\n0.0e0\ntrue\n"),
+    OK(FIX "loop-resume.tfd","true\ntrue\ntrue\n"),
+    OK(FIX "backend-edges.tfd",
+       "1121\ntrue\ntrue\ntrue\ntrue\ntrue\n"
+       "true\ntrue\ntrue\ntrue\ntrue\n0\n9\n"),
+    FAULT(FIX "backend-edge-record-div-first.tfd","R002",NULL,"7 div 0",2,"div"),
+    FAULT(FIX "backend-edge-record-overflow-first.tfd","R001",NULL,
+          "9223372036854775807 + 1",20,"+"),
+    FAULT(FIX "callback-map.tfd","R002",FIX "callback-library.tfd","7 div n",2,"div"),
+    FAULT(FIX "callback-fold.tfd","R005",NULL,"start ^ exponent",6,"^")
+};
+#undef OK
+#undef IO
+#undef FAULT
+
+static void join(char *path, const char *directory, const char *leaf) {
+    const int n=snprintf(path,PATH_CAP,"%s/%s",directory,leaf);
+    CHECK(n>0 && (size_t)n<PATH_CAP);
+}
+static void setup(void) {
+#ifdef _WIN32
+    const unsigned long pid=(unsigned long)GetCurrentProcessId();
+    (void)SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#else
+    const unsigned long pid=(unsigned long)getpid();
+#endif
+    CHECK(MAKE_DIR("tmp")==0 || errno==EEXIST);
+    CHECK(MAKE_DIR(scratch)==0 || errno==EEXIST);
+    unsigned int i;
+    for (i=0;i<64;++i) {
+        const int n=snprintf(work,sizeof work,"%s/run & (!) %lu-%u",scratch,pid,i);
+        CHECK(n>0 && (size_t)n<sizeof work);
+        if (MAKE_DIR(work)==0) break;
+        CHECK(errno==EEXIST);
+    }
+    CHECK(i<64);
+    join(out,work,"stdout.bin"); join(err,work,"stderr.bin");
+    /* LLVM-MinGW LLD rejects '%' in its own output directory. Keep it in
+     * the published filename to test argv and publication independently. */
+    join(input,work,"stdin & data.bin"); join(native,work,"native & % program" EXE);
+}
+static void write_bytes(const char *path, const char *data, size_t length) {
+    FILE *f=fopen(path,"wb");
+    CHECK(f!=NULL); CHECK(fwrite(data,1,length,f)==length); CHECK(fclose(f)==0);
+}
+static Bytes read_bytes(const char *path) {
+    FILE *f=fopen(path,"rb");
+    CHECK(f!=NULL); CHECK(fseek(f,0,SEEK_END)==0);
+    const long size=ftell(f);
+    CHECK(size>=0 && size<=BYTE_CAP); CHECK(fseek(f,0,SEEK_SET)==0);
+    Bytes result={malloc((size_t)size+1),(size_t)size};
+    CHECK(result.data!=NULL); CHECK(fread(result.data,1,result.length,f)==result.length);
+    CHECK(fgetc(f)==EOF && feof(f)); CHECK(fclose(f)==0);
+    result.data[result.length]='\0';
+    return result;
+}
+static void expect(const char *path, const char *expected, size_t length) {
+    const Bytes actual=read_bytes(path);
+    if (actual.length!=length || memcmp(actual.data,expected,length)!=0) {
+        size_t i=0;
+        while (i<actual.length && i<length && actual.data[i]==expected[i]) ++i;
+        fprintf(stderr,"%s: first difference at byte %zu (expected length %zu, got %zu)\n",
+                path,i,length,actual.length);
+        if (i<length) fprintf(stderr,"  expected 0x%02x\n",(unsigned)(unsigned char)expected[i]);
+        if (i<actual.length) fprintf(stderr,"  actual   0x%02x\n",(unsigned)(unsigned char)actual.data[i]);
+        CHECK(false);
+    }
+    free(actual.data);
+}
+
+#ifdef _WIN32
+/* Windows has no argv system call. Quote each argument for CRT decoding
+ * and provide the application name separately to CreateProcess. */
+static char *command_line(const char *const args[]) {
+    size_t cap=1;
+    for (size_t i=0;args[i]!=NULL;++i) {
+        const size_t n=strlen(args[i]);
+        CHECK(n<=PATH_CAP && cap+2*n+3<=32767);
+        cap+=2*n+3;
+    }
+    char *line=malloc(cap);
+    CHECK(line!=NULL);
+    char *next=line;
+    for (size_t i=0;args[i]!=NULL;++i) {
+        if (i!=0) *next++=' ';
+        *next++='"';
+        const char *p=args[i];
+        while (*p!='\0') {
+            size_t slashes=0;
+            while (*p=='\\') { ++slashes; ++p; }
+            if (*p=='"' || *p=='\0') slashes*=2;
+            for (size_t j=0;j<slashes;++j) *next++='\\';
+            if (*p=='"') *next++='\\';
+            if (*p!='\0') *next++=*p++;
+        }
+        *next++='"';
+    }
+    *next='\0';
+    return line;
+}
+static HANDLE stream(const char *path, bool reading) {
+    SECURITY_ATTRIBUTES inheritable={sizeof inheritable,NULL,TRUE};
+    HANDLE h=CreateFileA(path,reading ? GENERIC_READ : GENERIC_WRITE,FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         &inheritable,reading ? OPEN_EXISTING : CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    CHECK(h!=INVALID_HANDLE_VALUE);
+    return h;
+}
+static int spawn(const char *const args[]) {
+    STARTUPINFOA si={0};
+    PROCESS_INFORMATION pi={0};
+    si.cb=sizeof si;
+    si.dwFlags=STARTF_USESTDHANDLES;
+    si.hStdInput=stream("NUL",true);
+    si.hStdOutput=stream(out,false);
+    si.hStdError=stream(err,false);
+    char *line=command_line(args);
+    const BOOL launched=CreateProcessA(args[0],line,NULL,NULL,TRUE,CREATE_NO_WINDOW,NULL,NULL,&si,&pi);
+    const DWORD launch_error=launched ? 0 : GetLastError();
+    free(line);
+    CHECK(CloseHandle(si.hStdInput)!=0);
+    CHECK(CloseHandle(si.hStdOutput)!=0);
+    CHECK(CloseHandle(si.hStdError)!=0);
+    if (!launched) fprintf(stderr,"CreateProcess failed: %s (%lu)\n",args[0],(unsigned long)launch_error);
+    CHECK(launched!=0);
+    CHECK(CloseHandle(pi.hThread)!=0);
+    const DWORD waited=WaitForSingleObject(pi.hProcess,TIMEOUT_MS);
+    if (waited!=WAIT_OBJECT_0) {
+        (void)TerminateProcess(pi.hProcess,125);
+        (void)WaitForSingleObject(pi.hProcess,1000);
+        (void)CloseHandle(pi.hProcess);
+        fprintf(stderr,"%s: process wait failed (%lu)\n",args[0],(unsigned long)waited);
+        CHECK(false);
+    }
+    DWORD code=0;
+    CHECK(GetExitCodeProcess(pi.hProcess,&code)!=0); CHECK(CloseHandle(pi.hProcess)!=0);
+    if (code>255) fprintf(stderr,"%s: Windows process error 0x%08lx\n",args[0],(unsigned long)code);
+    CHECK(code<=255);
+    return (int)code;
+}
+#else
+static int spawn(const char *const args[]) {
+    struct timespec start, now;
+    const struct timespec pause={0,10000000L};
+    CHECK(clock_gettime(CLOCK_MONOTONIC,&start)==0);
+    const pid_t pid=fork();
+    CHECK(pid>=0);
+    if (pid==0) {
+        if (setpgid(0,0)!=0) _exit(126);
+        const int descriptors[]={open("/dev/null",O_RDONLY),
+            open(out,O_WRONLY|O_CREAT|O_TRUNC,0600),open(err,O_WRONLY|O_CREAT|O_TRUNC,0600)};
+        for (int i=0;i<3;++i) {
+            if (descriptors[i]<0 || dup2(descriptors[i],i)<0) _exit(126);
+            if (descriptors[i]>2) (void)close(descriptors[i]);
+        }
+        execv(args[0],(char *const *)args);
+        _exit(127);
+    }
+    (void)setpgid(pid,pid);
+    int status=0;
+    for (;;) {
+        const pid_t done=waitpid(pid,&status,WNOHANG);
+        if (done==pid) break;
+        CHECK(done==0 || errno==EINTR);
+        const bool timed_out=clock_gettime(CLOCK_MONOTONIC,&now)!=0 ||
+            difftime(now.tv_sec,start.tv_sec)*1000.0 +
+            ((double)now.tv_nsec-(double)start.tv_nsec)/1000000.0>=TIMEOUT_MS;
+        if (timed_out) {
+            (void)kill(-pid,SIGKILL);
+            (void)kill(pid,SIGKILL);
+            while (waitpid(pid,&status,0)<0 && errno==EINTR) {}
+            fprintf(stderr,"%s: child timed out or monotonic clock failed\n",args[0]);
+            CHECK(false);
+        }
+        (void)nanosleep(&pause,NULL);
+    }
+    CHECK(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+#endif
+
+static void run(const char *const args[], int expected) {
+    const int actual=spawn(args);
+    if (actual!=expected) {
+        const Bytes diagnostic=read_bytes(err);
+        fprintf(stderr,"%s: expected exit %d, got %d\n",args[0],expected,actual);
+        (void)fwrite(diagnostic.data,1,diagnostic.length,stderr);
+        free(diagnostic.data);
+        CHECK(false);
+    }
+}
+static void build(const char *compiler, const char *cc, const char *root,
+                  const char *source, const char *module_root, bool sanitize, int expected) {
+    const char *args[]={compiler,"build",source,"-o",native,"--cc",cc,
+                        "--runtime-root",root,"--root",module_root,sanitize ? "--sanitize" : NULL,NULL};
+    run(args,expected);
+    expect(out,"",0);
+}
+static void interpreter(const char *compiler, const char *source, const char *module_root,
+                        bool with_input, int expected) {
+    const char *args[]={compiler,"run",source,"--root",module_root,"--diagnostics-json",
+                        with_input ? "--stdin-file" : NULL,with_input ? input : NULL,NULL};
+    run(args,expected);
+}
+static void contains(const char *path, const char *fragment) {
+    const Bytes bytes=read_bytes(path);
+    CHECK(memchr(bytes.data,0,bytes.length)==NULL);
+    if (strstr(bytes.data,fragment)==NULL) {
+        fprintf(stderr,"missing %s in %s:\n%s",fragment,path,bytes.data);
+        CHECK(false);
+    }
+    free(bytes.data);
+}
+
+/* Translate the JSON renderer's quoted source bytes into native launcher
+ * escapes. Only the small escape subset actually emitted for path bytes is
+ * accepted. This lets us require the same original file, not just the same
+ * byte offsets in two possibly different files. */
+static unsigned int hex(char c) {
+    const char *digits="0123456789abcdef";
+    const char *p=c=='\0' ? NULL : strchr(digits,c);
+    CHECK(p!=NULL);
+    return (unsigned int)(p-digits);
+}
+static const char *path_from_json(const char *json, char path[static PATH_CAP]) {
+    size_t n=0;
+    while (*json!='"') {
+        CHECK(*json!='\0' && n<PATH_CAP-1);
+        unsigned char c=(unsigned char)*json++;
+        if (c=='\\') {
+            c=(unsigned char)*json++;
+            if (c=='u') {
+                CHECK(strncmp(json,"00",2)==0);
+                c=(unsigned char)(16*hex(json[2])+hex(json[3]));
+                json+=4;
+            } else CHECK(c=='\\' || c=='"');
+        }
+        CHECK(c!=0);
+        path[n++]=(char)c;
+    }
+    path[n]='\0';
+    return json+1;
+}
+typedef struct { size_t line, column; } Location;
+static Location location(const char *source, size_t end) {
+    Location loc={1,1};
+    for (size_t i=0;i<end;++i) {
+        const unsigned char c=(unsigned char)source[i];
+        if (c=='\n') { ++loc.line; loc.column=1; }
+        else if ((c&0xc0u)!=0x80u) ++loc.column;
+    }
+    return loc;
+}
+static void fault_report(const Case *test, char expected[static BYTE_CAP]) {
+    const char *file=test->origin_file==NULL ? test->source : test->origin_file;
+    const char *leaf=strrchr(file,'/');
+    CHECK(leaf!=NULL);
+    ++leaf;
+    const Bytes source=read_bytes(file), json=read_bytes(err);
+    CHECK(memchr(source.data,0,source.length)==NULL && memchr(json.data,0,json.length)==NULL);
+    const char *origin=strstr(source.data,test->context);
+    CHECK(origin!=NULL && strstr(origin+1,test->context)==NULL);
+    CHECK(test->origin_offset+test->origin_size<=strlen(test->context));
+    const size_t start=(size_t)(origin-source.data)+test->origin_offset;
+    const size_t end=start+test->origin_size;
+    const Location a=location(source.data,start), b=location(source.data,end);
+    int n=snprintf(expected,BYTE_CAP,"{\"schema_version\":2,\"diagnostics\":[{\"code\":\"%s\",\"severity\":\"error\",",
+                   test->code);
+    CHECK(n>0 && (size_t)n<BYTE_CAP && strncmp(json.data,expected,(size_t)n)==0);
+    const char label[]=",\"labels\":[{\"primary\":true,\"message\":\"\",\"span\":{\"source\":\"";
+    const char *primary=strstr(json.data,label);
+    CHECK(primary!=NULL);
+    char path[PATH_CAP];
+    const char *span=path_from_json(primary+sizeof label-1,path);
+    const char *base=path;
+    for (const char *p=path;*p!='\0';++p) if (*p=='/' || *p=='\\') base=p+1;
+    CHECK(strcmp(base,leaf)==0);
+    n=snprintf(expected,BYTE_CAP,
+        ",\"start_byte\":%zu,\"end_byte\":%zu,\"start\":{\"line\":%zu,\"column\":%zu,",
+        start,end,a.line,a.column);
+    CHECK(n>0 && (size_t)n<BYTE_CAP && strncmp(span,expected,(size_t)n)==0);
+    const char *end_field=strstr(span+(size_t)n,"},\"end\":");
+    CHECK(end_field!=NULL);
+    n=snprintf(expected,BYTE_CAP,"},\"end\":{\"line\":%zu,\"column\":%zu,",b.line,b.column);
+    CHECK(n>0 && (size_t)n<BYTE_CAP && strncmp(end_field,expected,(size_t)n)==0);
+    const char *text=strstr(end_field+(size_t)n,"},\"source_text\":");
+    CHECK(text!=NULL);
+    n=snprintf(expected,BYTE_CAP,"},\"source_text\":\"%.*s\",\"raw\":false}}",
+               (int)test->origin_size,source.data+start);
+    CHECK(n>0 && (size_t)n<BYTE_CAP && strncmp(text,expected,(size_t)n)==0);
+
+    static const char *const messages[]={NULL,"arithmetic overflow or nonfinite result",
+        "division or remainder by zero","execution resource limit exceeded",NULL,
+        "negative exponent for Int power","not enough input lines"};
+    const int code=test->code[3]-'0';
+    CHECK(code>0 && (size_t)code<sizeof messages/sizeof *messages && messages[code]!=NULL);
+    n=snprintf(expected,BYTE_CAP,"error[%s]: %s\n  --> \"",test->code,messages[code]);
+    CHECK(n>0 && (size_t)n<BYTE_CAP);
+    size_t used=(size_t)n;
+    for (const unsigned char *p=(const unsigned char *)path;*p!=0;++p) {
+        if (*p>=32 && *p<=126 && *p!='\\' && *p!='"') expected[used++]=(char)*p;
+        else {
+            CHECK(snprintf(expected+used,BYTE_CAP-used,"\\x%02x",(unsigned)*p)==4);
+            used+=4;
+        }
+    }
+    n=snprintf(expected+used,BYTE_CAP-used,"\":%zu:%zu..%zu:%zu [bytes %zu..%zu)\n",
+               a.line,a.column,b.line,b.column,start,end);
+    CHECK(n>0 && (size_t)n<BYTE_CAP-used);
+    free(json.data); free(source.data);
+}
+
+static void native_fault(const char *expected) {
+    /* Exact status and primary diagnostic; recursive cases can have a much
+     * longer native stack trace than the reference diagnostic. */
+    FILE *f=fopen(err,"rb");
+    CHECK(f!=NULL);
+    for (size_t i=0;expected[i]!='\0';++i) {
+        if (fgetc(f)!=(unsigned char)expected[i]) {
+            fprintf(stderr,"native fault differs at byte %zu; expected prefix:\n%s",i,expected);
+            CHECK(false);
+        }
+    }
+    CHECK(fclose(f)==0);
+}
+
+static void differential(const char *compiler, const char *cc, const char *root, bool sanitize) {
+    char previous[PATH_CAP]="";
+    for (size_t i=0;i<sizeof cases/sizeof *cases;++i) {
+        const Case *test=&cases[i];
+        current=test->source;
+        const char *module_root=strncmp(current,"examples/",sizeof "examples/"-1)==0 ? "examples" :
+            strncmp(current,M09,sizeof M09-1)==0 ? "tests/fixtures/types" : "tests/fixtures/differential";
+        if (strcmp(previous,current)!=0) {
+            if (*previous!='\0') CHECK(remove(native)==0);
+            build(compiler,cc,root,current,module_root,sanitize,0);
+            expect(err,"",0);
+            CHECK(strlen(current)<sizeof previous);
+            (void)strcpy(previous,current);
+        }
+        const bool with_input=test->stdin_bytes!=NULL;
+        if (with_input) write_bytes(input,test->stdin_bytes,test->stdin_size);
+        const int status=test->bad_input ? 2 : test->code!=NULL ? 3 : 0;
+        interpreter(compiler,current,module_root,with_input,status);
+        expect(out,test->output,test->output_size);
+        char *fault=malloc(BYTE_CAP);
+        CHECK(fault!=NULL);
+        if (test->bad_input) contains(err,"input snapshot is not valid UTF-8");
+        else if (test->code!=NULL) fault_report(test,fault);
+        else expect(err,LF_OK,sizeof LF_OK-1);
+        const char *args[]={native,with_input ? "--stdin-file" : NULL,with_input ? input : NULL,NULL};
+        run(args,status);
+        expect(out,test->output,test->output_size);
+        if (test->bad_input) contains(err,"input snapshot is not valid UTF-8");
+        else if (test->code!=NULL) native_fault(fault);
+        else expect(err,"",0);
+        free(fault);
+    }
+    CHECK(remove(native)==0);
+}
+
+static void absent(const char *path) {
+    FILE *f=fopen(path,"rb");
+    CHECK(f==NULL && errno==ENOENT);
+}
+static void bad_builds(const char *compiler, const char *cc, const char *root,
+                       const char *self, bool sanitize) {
+    static const struct { const char *source,*module_root,*code,*needle; } invalid[]={
+        {FIX "entry-only.tfd","tests/fixtures/differential","\"code\":\"E208\"","error[E208]"},
+        {"examples/showcase/models/shelf.tfd","examples","\"code\":\"E208\"","error[E208]"},
+        {"examples/invalid/candidate_cycle.tfd","examples","\"code\":\"E404\"","error[E404]"}
+    };
+    static const char stale[]="previous executable\0\xff";
+    for (size_t i=0;i<sizeof invalid/sizeof *invalid;++i) {
+        current=invalid[i].source;
+        interpreter(compiler,current,invalid[i].module_root,false,1);
+        expect(out,"",0); contains(err,invalid[i].code);
+        build(compiler,cc,root,current,invalid[i].module_root,sanitize,1);
+        contains(err,invalid[i].needle); absent(native);
+        write_bytes(native,stale,sizeof stale-1);
+        build(compiler,cc,root,current,invalid[i].module_root,sanitize,1);
+        contains(err,invalid[i].needle); expect(native,stale,sizeof stale-1);
+        CHECK(remove(native)==0);
+    }
+    current="failed downstream C compiler";
+    write_bytes(native,stale,sizeof stale-1);
+    build(compiler,self,root,"examples/intro/hello.tfd","examples",sanitize,2);
+    contains(err,"differential fake compiler wrote a partial executable");
+    expect(native,stale,sizeof stale-1);
+    CHECK(remove(native)==0);
+}
+
+static void source_alias(const char *compiler, const char *cc, const char *root, bool sanitize) {
+    static const char program[]="pub fn main() -> List[Text] { [\"keep this source\"] }\n";
+    char source[PATH_CAP];
+    join(source,work,"valid & alias.tfd");
+    current="output aliases valid source";
+    write_bytes(source,program,sizeof program-1);
+    interpreter(compiler,source,work,false,0);
+    expect(out,"keep this source\n",sizeof "keep this source\n"-1);
+    expect(err,LF_OK,sizeof LF_OK-1);
+    const char *emit[]={compiler,"emit-c",source,"-o",source,"--root",work,NULL};
+    const char *compile[]={compiler,"build",source,"-o",source,"--root",work,"--cc",cc,
+                           "--runtime-root",root,sanitize ? "--sanitize" : NULL,NULL};
+    run(emit,2);
+    expect(out,"",0); contains(err,"aliases a Ternfold source");
+    expect(source,program,sizeof program-1);
+    run(compile,2);
+    expect(out,"",0); contains(err,"aliases a Ternfold source");
+    expect(source,program,sizeof program-1);
+    CHECK(remove(source)==0);
+}
+
+/* A real downstream failure after writing into the compiler's private stage. */
+static int fake_cc(int argc, char **argv) {
+    for (int i=2;i+1<argc;++i) {
+        if (strcmp(argv[i],"-o")==0) {
+            FILE *f=fopen(argv[i+1],"wb");
+            if (f==NULL) return 43;
+            const bool wrote=fputs("partial",f)!=EOF;
+            if (fclose(f)!=0 || !wrote) return 43;
+            if (fputs("differential fake compiler wrote a partial executable\n",stderr)==EOF ||
+                fflush(stderr)!=0) return 43;
+            return 42;
+        }
+    }
+    return 43;
+}
+int main(int argc, char **argv) {
+    if (argc>2 && strcmp(argv[1],"-std=c17")==0) return fake_cc(argc,argv);
+    if ((argc!=4 && argc!=5) || (argc==5 && strcmp(argv[4],"--sanitize")!=0)) {
+        fprintf(stderr,"usage: %s COMPILER CC RUNTIME_ROOT [--sanitize]\n",argv[0]);
+        return 2;
+    }
+    current="setup";
+    setup();
+    differential(argv[1],argv[2],argv[3],argc==5);
+    bad_builds(argv[1],argv[2],argv[3],argv[0],argc==5);
+    source_alias(argv[1],argv[2],argv[3],argc==5);
+    current="cleanup";
+    CHECK(remove(out)==0); CHECK(remove(err)==0); CHECK(remove(input)==0);
+    CHECK(REMOVE_DIR(work)==0);
+    printf("differential: %zu execution cases, 4 build rejection cases and 2 alias checks passed\n",
+           sizeof cases/sizeof *cases);
+    return 0;
+}

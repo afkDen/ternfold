@@ -1,0 +1,4 @@
+pub fn main() -> List[Text] {
+    output "private";
+    main()
+}

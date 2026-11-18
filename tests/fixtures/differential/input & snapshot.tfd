@@ -1,0 +1,8 @@
+pub fn main() -> List[Text] {
+    input first: Text from stdin;
+    output "first=" ++ first to stdout;
+    input empty: Text;
+    output "empty=" ++ empty;
+    input last: Text;
+    ["last=" ++ last, "quote: \" slash: \\ tab: \t NUL: \u{0}end"]
+}

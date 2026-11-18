@@ -1,0 +1,10 @@
+pub fn main() -> List[Text] {
+    let minimum = -9223372036854775808;
+    let maximum = 9223372036854775807;
+    let safe = false && 1 div 0 == 0 || true || 2 ^ -1 == 0;
+    [int_text(minimum), int_text(maximum), int_text(-7 div 3), int_text(-7 % 3),
+     int_text(0 ^ 0), float_text(5 / 2 / 2),
+     bool_text(9007199254740993 / 1 == 9007199254740992.0),
+     bool_text(minimum / -1 == 9223372036854775808.0),
+     float_text(5e-324), float_text(5e-324 / 2), float_text(-0.0), bool_text(safe)]
+}
