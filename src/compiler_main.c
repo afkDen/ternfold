@@ -3,6 +3,7 @@
 #include "ternfold/token_dump.h"
 #include "ternfold/parser.h"
 #include "ternfold/ast_dump.h"
+#include "ternfold/resolve.h"
 
 #include <signal.h>
 #include <string.h>
@@ -19,6 +20,29 @@ static bool extension(const char *path) {
     size_t length = strlen(path);
     return length >= 4 && strcmp(path+length-4,".tfd") == 0;
 }
+static int check_source(const char *path, const char *root, TfDiagnosticFormat format) {
+    TfSourceManager *manager = NULL;
+    TfResolution *resolution = NULL;
+    TfResolveOptions options = {root, 100};
+    const char *failure = NULL;
+    int code = 2;
+    if (tf_source_manager_create(&manager,NULL) != TF_OK ||
+        tf_resolve(&resolution,manager,path,&options,NULL) != TF_OK) {
+        failure = "cannot resolve source (read/path capability, resource limit or allocation failure)";
+        goto done;
+    }
+    code = tf_diagnostic_bag_has_errors(tf_resolution_diagnostics(resolution)) ? 1 : 0;
+    if (tf_diagnostic_bag_write(stderr,tf_resolution_diagnostics(resolution),format,
+                                TF_DIAG_COLOR_NEVER) != TF_OK || fflush(stderr) != 0)
+        failure = "cannot write diagnostics";
+    else if (code == 0 && (fputs("Name resolution succeeded; types and later phases were not checked.\n",
+                                 stdout) == EOF || fflush(stdout) != 0))
+        failure = "cannot write check result";
+done:
+    tf_resolution_destroy(resolution);
+    tf_source_manager_destroy(manager);
+    return failure != NULL ? driver_error(failure,2) : code;
+}
 int main(int argc, char **argv) {
     TfSourceManager *manager = NULL;
     TfDiagnosticBag *bag = NULL;
@@ -26,10 +50,10 @@ int main(int argc, char **argv) {
     TfLexResult lex = {0};
     TfParseResult *parsed = NULL;
     const TfDiagnosticBag *shown;
-    bool ast_mode;
+    bool ast_mode, check_mode;
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
-    const char *directory = NULL, *failure = NULL;
+    const char *directory = NULL, *root = NULL, *failure = NULL;
     TfStatus status;
     int i, code = 2;
 #ifdef _WIN32
@@ -41,7 +65,8 @@ int main(int argc, char **argv) {
         if (fputs("Usage: ternfold tokens source.tfd [--json] [--diagnostics-json] [--symbol-table DIR]\n"
                   "Options follow source, in any order, once each. DIR must already exist.\n"
                   "       ternfold ast source.tfd [--json] [--diagnostics-json]\n"
-                  "Inspects tokens or syntax/recovery AST; check/run/compile are unavailable.\n"
+                  "       ternfold check source.tfd [--root DIR] [--diagnostics-json]\n"
+                  "Check stops after name resolution; run/compile are unavailable.\n"
                   "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
                   "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
@@ -52,17 +77,22 @@ int main(int argc, char **argv) {
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
     }
-    if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
-        return driver_error("expected tokens/ast source.tfd; use --help (check/run/compile are unavailable)",2);
+    if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0 &&
+                     strcmp(argv[1],"check") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
+        return driver_error("expected tokens/ast/check source.tfd; use --help (run/compile are unavailable)",2);
     ast_mode = strcmp(argv[1],"ast") == 0;
+    check_mode = strcmp(argv[1],"check") == 0;
     for (i = 3; i < argc; ++i) {
-        if (strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
+        if (!check_mode && strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
         else if (strcmp(argv[i],"--diagnostics-json") == 0 && diagnostic_format == TF_DIAG_TEXT) diagnostic_format = TF_DIAG_JSON;
-        else if (!ast_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
+        else if (!ast_mode && !check_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
                  argv[i+1][0] != '-') directory = argv[++i];
+        else if (check_mode && strcmp(argv[i],"--root") == 0 && root == NULL && i+1 < argc &&
+                 argv[i+1][0] != '\0' && argv[i+1][0] != '-') root = argv[++i];
         else return driver_error("unknown, duplicate or incomplete option; use --help",2);
     }
     if (!extension(argv[2])) return driver_error("source file extension must be exactly .tfd",1);
+    if (check_mode) return check_source(argv[2],root,diagnostic_format);
     if (tf_source_manager_create(&manager,NULL) != TF_OK || tf_diagnostic_bag_create(&bag,100,NULL) != TF_OK) {
         failure = "cannot allocate compiler session"; goto cleanup;
     }

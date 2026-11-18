@@ -53,6 +53,11 @@ TfStatus tf_source_manager_create(TfSourceManager **out, const TfAllocator *allo
 void tf_source_manager_destroy(TfSourceManager *manager);
 TfStatus tf_source_manager_load(TfSourceManager *manager, const char *path,
                                 const TfManagedSource **out);
+/* Resolve a cached normalized request without opening or probing the path.
+ * TF_OK with *out=NULL is a miss. A hit returns the cached status and borrow.
+ * Invalid arguments or allocation/normalization failure return HOST_ERROR. */
+TfStatus tf_source_manager_cached(TfSourceManager *manager, const char *path,
+                                  const TfManagedSource **out);
 const TfManagedSource *tf_source_manager_lookup(const TfSourceManager *manager,
                                                TfSourceId id);
 size_t tf_source_manager_count(const TfSourceManager *manager);

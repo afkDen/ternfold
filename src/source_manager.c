@@ -3,7 +3,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 #endif
-#include "ternfold/source_manager.h"
+#include "source_manager_internal.h"
 #include "internal.h"
 
 #include <stdlib.h>
@@ -35,7 +35,6 @@ struct TfSourceManager {
 static void release(TfAllocator a, void *p) {
     if (p != NULL) a.deallocate(a.context, p);
 }
-#ifndef _WIN32
 static char *copy_path(TfAllocator a, const char *p) {
     size_t n = strlen(p);
     char *result;
@@ -44,7 +43,6 @@ static char *copy_path(TfAllocator a, const char *p) {
     if (result != NULL) memcpy(result, p, n + 1);
     return result;
 }
-#endif
 
 #ifdef _WIN32
 static char *absolute_path(TfAllocator a, const char *path) {
@@ -324,8 +322,46 @@ const TfManagedSource *tf_source_manager_lookup(const TfSourceManager *manager, 
 size_t tf_source_manager_count(const TfSourceManager *manager) {
     return manager != NULL ? manager->count : 0;
 }
-TfStatus tf_source_manager_load(TfSourceManager *manager, const char *path,
-                                const TfManagedSource **out) {
+static const TfManagedSource *find_alias(const TfSourceManager *manager,
+                                         const char *absolute, const void *key) {
+    size_t i;
+#ifdef _WIN32
+    (void)absolute;
+#else
+    (void)key;
+#endif
+    for (i = 0; i < manager->alias_count; ++i) {
+#ifdef _WIN32
+        if (path_key_equal(manager->aliases[i].native_key, key))
+#else
+        if (strcmp(manager->aliases[i].path, absolute) == 0)
+#endif
+            return manager->aliases[i].entry;
+    }
+    return NULL;
+}
+TfStatus tf_source_manager_cached(TfSourceManager *manager, const char *path,
+                                  const TfManagedSource **out) {
+    TfAllocator a;
+    char *absolute;
+    void *key = NULL;
+    if (out == NULL) return TF_HOST_ERROR;
+    *out = NULL;
+    if (manager == NULL || path == NULL || path[0] == '\0') return TF_HOST_ERROR;
+    a = manager->allocator;
+    absolute = absolute_path(a,path);
+    if (absolute == NULL) return TF_HOST_ERROR;
+#ifdef _WIN32
+    key = wide_path(a,absolute);
+    if (key == NULL) { release(a,absolute); return TF_HOST_ERROR; }
+#endif
+    *out = find_alias(manager,absolute,key);
+    release(a,absolute);
+    release(a,key);
+    return *out != NULL ? (*out)->status : TF_OK;
+}
+static TfStatus load(TfSourceManager *manager, const char *path, const char *resolved,
+                     const TfManagedSource **out) {
     TfAllocator a;
     char *absolute = NULL, *canonical = NULL, *canonical_alias = NULL;
     TfManagedSource *entry = NULL;
@@ -344,26 +380,23 @@ TfStatus tf_source_manager_load(TfSourceManager *manager, const char *path,
     absolute_key = wide_path(a, absolute);
     if (absolute_key == NULL) goto fail;
 #endif
-    for (i = 0; i < manager->alias_count; ++i) {
-#ifdef _WIN32
-        if (path_key_equal(manager->aliases[i].native_key, absolute_key)) {
-#else
-        if (strcmp(manager->aliases[i].path, absolute) == 0) {
-#endif
-            *out = manager->aliases[i].entry;
-            release(a, absolute);
-            release(a, absolute_key);
-            return (*out)->status;
-        }
+    *out = find_alias(manager,absolute,absolute_key);
+    if (*out != NULL) {
+        release(a,absolute);
+        release(a,absolute_key);
+        return (*out)->status;
     }
+    if (resolved != NULL) canonical = copy_path(a,resolved);
+    else {
 #ifdef _WIN32
-    if (!supported_case_path(a, absolute_key)) goto fail;
-    canonical = resolved_path(a, absolute);
+        if (!supported_case_path(a, absolute_key)) goto fail;
+        canonical = resolved_path(a, absolute);
 #else
-    /* Resolve the original spelling so alias normalization cannot change
-     * native traversal requirements for an uncached request. */
-    canonical = resolved_path(a, path);
+        /* Resolve the original spelling so alias normalization cannot change
+         * native traversal requirements for an uncached request. */
+        canonical = resolved_path(a, path);
 #endif
+    }
     if (canonical == NULL) goto fail;
     canonical_alias = absolute_path(a, canonical);
     if (canonical_alias == NULL) goto fail;
@@ -427,4 +460,16 @@ fail:
     release(a, absolute_key);
     release(a, canonical_key);
     return TF_HOST_ERROR;
+}
+TfStatus tf_source_manager_load(TfSourceManager *manager, const char *path,
+                                const TfManagedSource **out) {
+    return load(manager,path,NULL,out);
+}
+TfStatus tf_source_manager_load_resolved(TfSourceManager *manager, const char *request,
+                                         const char *resolved, const TfManagedSource **out) {
+    if (resolved == NULL || resolved[0] == '\0') {
+        if (out != NULL) *out = NULL;
+        return TF_HOST_ERROR;
+    }
+    return load(manager,request,resolved,out);
 }
