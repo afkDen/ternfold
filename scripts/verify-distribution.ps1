@@ -5,6 +5,8 @@ $roots = @('.editorconfig','.gitattributes','.gitignore','README.md','CONTRIBUTI
     'CHANGELOG.md','build.bat')
 $directories = @('.github','benchmarks','docs','examples','experiments','include',
     'runtime','scripts','src','stdlib','tests','tools')
+$documents = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'public-documents.json') | ConvertFrom-Json
+if ($documents.schema -ne 1 -or -not $documents.paths.Count) { throw 'Invalid public document inventory' }
 $tree = @(git -C $root -c core.quotepath=false ls-tree -r --name-only $Revision)
 if ($LASTEXITCODE -ne 0 -or -not $tree.Count) { throw 'Cannot read the tagged tree' }
 $denied = @($tree | Where-Object {
@@ -12,9 +14,7 @@ $denied = @($tree | Where-Object {
      ($_ -match '/' -and ($_ -split '/',2)[0] -cnotin $directories)) -or
     ($_ -match '/' -and
      (($_ -replace '^\.github/','') -replace '(^|/)\.gitignore$','$1ignore') -match '(^|/)\.') -or
-    ($_ -match '/[^/]+\.md$' -and
-     ([IO.Path]::GetFileName($_)) -cnotin @('README.md','PULL_REQUEST_TEMPLATE.md') -and
-     ([IO.Path]::GetFileName($_)) -cmatch '[A-Z_]') -or
+    ($_ -match '\.md$' -and $_ -cnotin $documents.paths) -or
     $_ -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
     $_ -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$'
 })

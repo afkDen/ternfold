@@ -17,6 +17,8 @@ try {
     if ($LASTEXITCODE -ne 0 -or $tag -cne $record.original_release_tag_object) { throw 'Original release tag changed' }
     $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $blobs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $documents = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'public-documents.json') | ConvertFrom-Json
+    if ($documents.schema -ne 1 -or -not $documents.paths.Count) { throw 'Invalid public document inventory' }
     $contentPattern = 'BEGIN (OPENSSH|RSA|EC|DSA|ENCRYPTED) PRIVATE KEY|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,}|[A-Z]:[/\\]Users[/\\]|[\w.+-]+@(gmail|outlook)\.com'
     for ($i=0; $i -lt $commits.Count; $i++) {
         $commit = $commits[$i]
@@ -54,9 +56,7 @@ try {
             ($path -match '/' -and ($path -split '/',2)[0] -cnotin $directories) -or
             ($path -match '/' -and
              (($path -replace '^\.github/','') -replace '(^|/)\.gitignore$','$1ignore') -match '(^|/)\.') -or
-            ($path -match '/[^/]+\.md$' -and
-             ([IO.Path]::GetFileName($path)) -cnotin @('README.md','PULL_REQUEST_TEMPLATE.md') -and
-             ([IO.Path]::GetFileName($path)) -cmatch '[A-Z_]') -or
+            ($path -match '\.md$' -and $path -cnotin $documents.paths) -or
             $path -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
             $path -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$') { throw "Unexpected historical path: $path" }
     }
