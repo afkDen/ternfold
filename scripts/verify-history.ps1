@@ -46,7 +46,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect history tree' }
     }
     foreach ($path in $paths) {
-        if ($path -match '(^|/)(\.agents|\.codex|\.git|\.env|AGENTS\.md|MASTER_IMPLEMENTATION\.md)(/|$)' -or
+        $roots = @('.editorconfig','.gitattributes','.gitignore','README.md','CONTRIBUTING.md',
+            'CHANGELOG.md','build.bat')
+        $directories = @('.github','benchmarks','docs','examples','experiments','include',
+            'runtime','scripts','src','stdlib','tests','tools')
+        if (($path -notmatch '/' -and $path -cnotin $roots) -or
+            ($path -match '/' -and ($path -split '/',2)[0] -cnotin $directories) -or
             $path -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
             $path -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$') { throw "Unexpected historical path: $path" }
     }

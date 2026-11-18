@@ -3,7 +3,7 @@
  * Budgets: 1 MiB/file or capture, 32768 JSON tokens, depth 32, 256 cases/files,
  * 1024 directory entries, directory depth 16, 60 seconds/child. No phase skips.
  * Exit expectations: success 0, static/lexical diagnostic 1, runtime fault 3.
- * Captures remain under tmp/m12-manifest for supervisor review. */
+ * Captures remain under tmp/m12-manifest for inspection. */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif

@@ -3,10 +3,8 @@
 /output/
 /tmp/
 /.uv-cache/
-/.agents/
-/.codex/
-/AGENTS.md
-/MASTER_IMPLEMENTATION.md
+/.*/
+!/.github/
 /docs/proposal/
 /submission/
 /experiments/composition/.build/
