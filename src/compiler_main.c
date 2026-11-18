@@ -6,6 +6,7 @@
 #include "ternfold/resolve.h"
 #include "ternfold/check.h"
 #include "typed_signatures.h"
+#include "ternfold/plan_dump.h"
 
 #include <signal.h>
 #include <string.h>
@@ -22,11 +23,13 @@ static bool extension(const char *path) {
     size_t length = strlen(path);
     return length >= 4 && strcmp(path+length-4,".tfd") == 0;
 }
-static int check_source(const char *path, const char *root, TfDiagnosticFormat format) {
+static int check_source(const char *path, const char *root, TfDiagnosticFormat format,
+                        bool plan_mode, bool json) {
     TfSourceManager *manager = NULL;
     TfResolution *resolution = NULL;
     TfTypedSignatures *signatures = NULL;
     TfTypedProgram *typed = NULL;
+    TfMachineProgram *machines = NULL;
     TfResolveOptions options = {root, 100};
     const TfDiagnosticBag *shown;
     const char *failure = NULL;
@@ -50,16 +53,29 @@ static int check_source(const char *path, const char *root, TfDiagnosticFormat f
                 goto done;
             }
             shown = tf_typed_program_diagnostics(typed);
+            if (!tf_diagnostic_bag_has_errors(shown)) {
+                if (tf_machine_program_build(&machines,typed,100,NULL) != TF_OK) {
+                    failure = "cannot analyze machines (resource limit or allocation failure)";
+                    goto done;
+                }
+                shown = tf_machine_program_diagnostics(machines);
+            }
         }
     }
     code = tf_diagnostic_bag_has_errors(shown) ? 1 : 0;
     if (tf_diagnostic_bag_write(stderr,shown,format,
                                 TF_DIAG_COLOR_NEVER) != TF_OK || fflush(stderr) != 0)
         failure = "cannot write diagnostics";
-    else if (code == 0 && (fputs("Type checking succeeded; machine scheduling and later phases were not checked.\n",
-                                 stdout) == EOF || fflush(stdout) != 0))
-        failure = "cannot write check result";
+    else if (code == 0) {
+        if (plan_mode) {
+            if (tf_plan_dump_write(stdout,machines,json) != TF_OK) failure = "cannot write machine plan";
+        } else if (fputs("Frontend checks succeeded; execution and C generation are unavailable.\n",stdout) == EOF)
+            failure = "cannot write check result";
+        if (fflush(stdout) != 0 && failure == NULL)
+            failure = plan_mode ? "cannot write machine plan" : "cannot write check result";
+    }
 done:
+    tf_machine_program_destroy(machines);
     tf_typed_program_destroy(typed);
     tf_signatures_destroy(signatures);
     tf_resolution_destroy(resolution);
@@ -73,7 +89,7 @@ int main(int argc, char **argv) {
     TfLexResult lex = {0};
     TfParseResult *parsed = NULL;
     const TfDiagnosticBag *shown;
-    bool ast_mode, check_mode;
+    bool ast_mode, check_mode, plan_mode;
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
     const char *directory = NULL, *root = NULL, *failure = NULL;
@@ -89,7 +105,8 @@ int main(int argc, char **argv) {
                   "Options follow source, in any order, once each. DIR must already exist.\n"
                   "       ternfold ast source.tfd [--json] [--diagnostics-json]\n"
                   "       ternfold check source.tfd [--root DIR] [--diagnostics-json]\n"
-                  "Check stops after type checking; machine scheduling and run/compile are unavailable.\n"
+                  "       ternfold plan source.tfd [--root DIR] [--json] [--diagnostics-json]\n"
+                  "Check validates the frontend, including machine scheduling; run/compile are unavailable.\n"
                   "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
                   "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
@@ -101,21 +118,23 @@ int main(int argc, char **argv) {
         return fflush(stderr) == 0 ? 0 : 2;
     }
     if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0 &&
-                     strcmp(argv[1],"check") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
-        return driver_error("expected tokens/ast/check source.tfd; use --help (run/compile are unavailable)",2);
+                     strcmp(argv[1],"check") != 0 && strcmp(argv[1],"plan") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
+        return driver_error("expected tokens/ast/check/plan source.tfd; use --help (run/compile are unavailable)",2);
     ast_mode = strcmp(argv[1],"ast") == 0;
     check_mode = strcmp(argv[1],"check") == 0;
+    plan_mode = strcmp(argv[1],"plan") == 0;
     for (i = 3; i < argc; ++i) {
         if (!check_mode && strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
         else if (strcmp(argv[i],"--diagnostics-json") == 0 && diagnostic_format == TF_DIAG_TEXT) diagnostic_format = TF_DIAG_JSON;
-        else if (!ast_mode && !check_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
+        else if (!ast_mode && !check_mode && !plan_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
                  argv[i+1][0] != '-') directory = argv[++i];
-        else if (check_mode && strcmp(argv[i],"--root") == 0 && root == NULL && i+1 < argc &&
+        else if ((check_mode || plan_mode) && strcmp(argv[i],"--root") == 0 && root == NULL && i+1 < argc &&
                  argv[i+1][0] != '\0' && argv[i+1][0] != '-') root = argv[++i];
         else return driver_error("unknown, duplicate or incomplete option; use --help",2);
     }
     if (!extension(argv[2])) return driver_error("source file extension must be exactly .tfd",1);
-    if (check_mode) return check_source(argv[2],root,diagnostic_format);
+    if (check_mode || plan_mode)
+        return check_source(argv[2],root,diagnostic_format,plan_mode,dump_format == TF_TOKEN_DUMP_JSON);
     if (tf_source_manager_create(&manager,NULL) != TF_OK || tf_diagnostic_bag_create(&bag,100,NULL) != TF_OK) {
         failure = "cannot allocate compiler session"; goto cleanup;
     }
