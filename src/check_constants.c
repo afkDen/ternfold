@@ -6,19 +6,7 @@
 
 typedef struct Arena Arena;
 struct Arena { Arena *next; max_align_t alignment; };
-typedef struct Constant Constant;
-struct Constant {
-    TfConcreteTypeKind kind;
-    TfSymbolId variant;
-    union {
-        int64_t integer;
-        uint64_t bits;
-        bool boolean;
-        uint32_t scalar;
-        struct { const unsigned char *bytes; size_t length; } text;
-        struct { const Constant **items; size_t count; } aggregate;
-    } as;
-};
+typedef TfConstantValue Constant;
 typedef struct {
     TfCheckContext *checker;
     const TfTypedProgram *program;
@@ -43,6 +31,7 @@ static void *allocate(Evaluation *e, size_t count, size_t width) {
 static const TfAstNode *node(TfNodeId id) { return tf_ast_get(id.owner,id); }
 static void error(Evaluation *e, TfSpan span, const char *message) {
     if (e->status == TF_OK) {
+        if (e->checker == NULL) { e->status = TF_HOST_ERROR; return; }
         TfStatus status = tf_check_diagnostic(e->checker,"E306",message,span,(TfSpan){0});
         e->status = status == TF_OK ? TF_SOURCE_ERROR : TF_HOST_ERROR;
     }
@@ -102,9 +91,9 @@ static void closed(Evaluation *e, const TfAstNode *n, size_t depth) {
     error(e,n->span,"state initializer requires a closed constant expression");
 }
 
-static Constant *new_value(Evaluation *e, TfConcreteTypeKind kind) {
+static Constant *new_value(Evaluation *e, const TfConcreteType *type) {
     Constant *v = allocate(e,1,sizeof *v);
-    if (v != NULL) *v = (Constant){.kind=kind};
+    if (v != NULL) *v = (Constant){.type=type->id,.kind=type->kind};
     return v;
 }
 
@@ -247,7 +236,7 @@ static const Constant *evaluate(Evaluation *e, const TfAstNode *n, size_t depth)
     type = typed != NULL ? tf_type_store_get(e->store,typed->type) : NULL;
     if (type == NULL) { e->status = TF_HOST_ERROR; return NULL; }
     if (n->kind == TF_AST_GROUP) return evaluate(e,node(n->as.group.expression),depth+1);
-    out = new_value(e,type->kind);
+    out = new_value(e,type);
     if (out == NULL) return NULL;
     switch (n->kind) {
     case TF_AST_UNIT: break;
@@ -290,7 +279,11 @@ static const Constant *evaluate(Evaluation *e, const TfAstNode *n, size_t depth)
         break;
     }
     case TF_AST_LIST: return aggregate(e,out,n->as.list.elements,false,false,depth);
-    case TF_AST_PATH: out->variant = typed->target; break;
+    case TF_AST_PATH:
+        out->variant = typed->target;
+        out->as.aggregate.items = NULL;
+        out->as.aggregate.count = 0;
+        break;
     case TF_AST_CALL: {
         const TfResolvedSymbol *s = target(e,n->as.call.callee);
         if (s == NULL) { e->status = TF_HOST_ERROR; return NULL; }
@@ -302,22 +295,40 @@ static const Constant *evaluate(Evaluation *e, const TfAstNode *n, size_t depth)
     return e->status == TF_OK ? out : NULL;
 }
 
-TfStatus tf_check_constant(TfCheckContext *checker, const TfAstNode *state) {
-    Evaluation e;
-    const TfAstNode *initializer;
-    const TfTypedProgram *program;
-    if (checker == NULL || state == NULL || state->kind != TF_AST_STATE) return TF_HOST_ERROR;
-    program = tf_check_program(checker);
-    e = (Evaluation){.checker=checker,.program=program,
+static TfStatus initializer(TfCheckContext *checker, const TfTypedProgram *program,
+                            const TfAstNode *state, TfAllocator allocator,
+                            TfConstantVisitor visit, void *context) {
+    const TfAstNode *expression = node(state->as.state.value);
+    Evaluation e = {.checker=checker,.program=program,
         .resolution=tf_typed_program_resolution(program),.store=tf_typed_program_store(program),
-        .allocator=*tf_check_allocator(checker),.status=TF_OK};
-    initializer = node(state->as.state.value);
-    closed(&e,initializer,0);
-    if (e.status == TF_OK) (void)evaluate(&e,initializer,0);
+        .allocator=allocator,.status=TF_OK};
+    closed(&e,expression,0);
+    if (e.status == TF_OK) {
+        const Constant *value = evaluate(&e,expression,0);
+        if (e.status == TF_OK && (value == NULL ||
+            (visit != NULL && visit(context,value) != TF_OK))) e.status = TF_HOST_ERROR;
+    }
     while (e.arena != NULL) {
         Arena *next = e.arena->next;
         e.allocator.deallocate(e.allocator.context,e.arena);
         e.arena = next;
     }
     return e.status;
+}
+
+TfStatus tf_check_constant(TfCheckContext *checker, const TfAstNode *state) {
+    if (checker == NULL || state == NULL || state->kind != TF_AST_STATE) return TF_HOST_ERROR;
+    return initializer(checker,tf_check_program(checker),state,*tf_check_allocator(checker),NULL,NULL);
+}
+
+TfStatus tf_visit_checked_initializer(const TfTypedProgram *program, TfNodeId state,
+                                      const TfAllocator *allocator, TfConstantVisitor visit,
+                                      void *context) {
+    const TfAllocator a = tf_allocator(allocator);
+    const TfAstNode *n;
+    if (visit == NULL || !tf_allocator_valid(a) ||
+        tf_diagnostic_phase_kind(tf_typed_program_phase(program)) != TF_DIAG_PHASE_VALID ||
+        tf_typed_program_node(program,state) == NULL ||
+        (n = node(state)) == NULL || n->kind != TF_AST_STATE) return TF_HOST_ERROR;
+    return initializer(NULL,program,n,a,visit,context);
 }
