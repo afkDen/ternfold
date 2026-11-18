@@ -1,0 +1,18 @@
+machine Bin(delta: Int) yields Int rejects Text {
+    state doubled: Int = 4;
+    state count: Int = 2;
+    next doubled = next.count * 2;
+    next count = count + delta;
+    guard next.count >= 0 else "negative";
+    guard next.count <= 10 else "large";
+    emit next.doubled;
+    emit doubled;
+}
+
+machine Unused(signal: Unit) yields Unit rejects Unit {
+    state count: Int = 0;
+    next count = count;
+}
+
+fn run(delta: Int) -> Decision[Bin, Int, Text] { step(Bin(), delta) }
+fn callable() -> fn(Bin, Int) -> Decision[Bin, Int, Text] { step }

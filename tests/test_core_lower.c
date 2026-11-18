@@ -187,6 +187,71 @@ static void inspect_closures(const TfCoreProgramData *d) {
     CHECK(nth(b,1,TF_CORE_OP_BINARY)->operation.operands.items[1]==inner->captures[2].value);
 }
 
+static void inspect_reject(const TfCoreProgramData *d,const TfCoreFunction *step,TfCoreBlockId id,
+                           const char *reason) {
+    const TfCoreBlock *block=tf_core_block(step,id);
+    CHECK(text_is(constant(d,block,0,TF_CORE_CONSTANT_TEXT)->as.text,reason));
+    const TfCoreLet *reject=nth(block,1,TF_CORE_OP_VARIANT);
+    CHECK(block->let_count==2 && block->terminator.value==reject->value);
+    CHECK(reject->operation.as.variant.tag==TF_CORE_DECISION_REJECT &&
+          reject->operation.operands.items[0]==step->parameters[0].value &&
+          reject->operation.operands.items[1]==block->lets[0].value);
+}
+
+static void inspect_machines(const TfCoreProgramData *d) {
+    CHECK(d!=NULL && d->function_count==7 && d->entry==0);
+    const TfCoreFunction *run=find(d,"run"), *callable=find(d,"callable");
+    const TfCoreBlock *b=tf_core_block(run,run->body);
+    const TfCoreFunctionId init_id=nth(b,0,TF_CORE_OP_CALL)->operation.as.function;
+    const TfCoreFunctionId step_id=nth(b,1,TF_CORE_OP_CALL)->operation.as.function;
+    const TfCoreFunction *init=tf_core_function(d,init_id), *step=tf_core_function(d,step_id);
+    CHECK(init!=NULL && init->parameter_count==0 && step!=NULL && step->parameter_count==2);
+    CHECK(step->parameters[0].type==init->result && run->result==step->result);
+    b=tf_core_block(init,init->body);
+    CHECK(constant(d,b,0,TF_CORE_CONSTANT_INT)->as.integer==4);
+    CHECK(constant(d,b,1,TF_CORE_CONSTANT_INT)->as.integer==2);
+    const TfCoreLet *initial=nth(b,2,TF_CORE_OP_MACHINE_VALUE);
+    CHECK(initial->operation.operands.items[0]==b->lets[0].value && initial->operation.operands.items[1]==b->lets[1].value);
+    CHECK(b->terminator.value==initial->value);
+
+    b=tf_core_block(step,step->body);
+    const TfCoreLet *old_double=nth(b,0,TF_CORE_OP_PROJECT), *old_count=nth(b,1,TF_CORE_OP_PROJECT);
+    CHECK(old_double->operation.as.field==0 && old_count->operation.as.field==1);
+    CHECK(old_double->operation.operands.items[0]==step->parameters[0].value &&
+          old_count->operation.operands.items[0]==step->parameters[0].value);
+    const TfCoreLet *count=nth(b,2,TF_CORE_OP_BINARY), *doubled=nth(b,4,TF_CORE_OP_BINARY);
+    CHECK(count->operation.as.binary==TF_CORE_BINARY_ADD && count->operation.operands.items[0]==old_count->value &&
+          count->operation.operands.items[1]==step->parameters[1].value);
+    CHECK(doubled->operation.as.binary==TF_CORE_BINARY_MULTIPLY && doubled->operation.operands.items[0]==count->value);
+    CHECK(nth(b,6,TF_CORE_OP_BINARY)->operation.as.binary==TF_CORE_BINARY_GREATER_EQUAL);
+    const TfCoreLet *guard=nth(b,7,TF_CORE_OP_IF);
+    CHECK(b->let_count==8 && guard->operation.operands.items[0]==b->lets[6].value);
+    inspect_reject(d,step,guard->operation.as.branch.else_block,"negative");
+    b=tf_core_block(step,guard->operation.as.branch.then_block);
+    CHECK(nth(b,1,TF_CORE_OP_BINARY)->operation.as.binary==TF_CORE_BINARY_LESS_EQUAL);
+    guard=nth(b,2,TF_CORE_OP_IF);
+    CHECK(b->let_count==3 && guard->operation.operands.items[0]==b->lets[1].value);
+    inspect_reject(d,step,guard->operation.as.branch.else_block,"large");
+    b=tf_core_block(step,guard->operation.as.branch.then_block);
+    const TfCoreLet *emissions=nth(b,0,TF_CORE_OP_LIST), *next=nth(b,1,TF_CORE_OP_MACHINE_VALUE);
+    const TfCoreLet *accept=nth(b,2,TF_CORE_OP_VARIANT);
+    CHECK(emissions->operation.operands.count==2 && emissions->operation.operands.items[0]==doubled->value &&
+          emissions->operation.operands.items[1]==old_double->value);
+    CHECK(next->operation.operands.count==2 && next->operation.operands.items[0]==doubled->value &&
+          next->operation.operands.items[1]==count->value);
+    CHECK(accept->operation.as.variant.tag==TF_CORE_DECISION_ACCEPT && accept->operation.operands.items[0]==next->value &&
+          accept->operation.operands.items[1]==emissions->value && b->terminator.value==accept->value);
+
+    b=tf_core_block(callable,callable->body);
+    const TfCoreFunction *wrapper=tf_core_function(d,nth(b,0,TF_CORE_OP_CLOSURE)->operation.as.function);
+    CHECK(wrapper!=NULL && wrapper->capture_count==0);
+    CHECK(nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_CALL)->operation.as.function==step_id);
+    size_t decisions=0;
+    for (size_t i=0; i<d->type_count; ++i)
+        if (d->types[i].kind==TF_CORE_TYPE_DECISION) ++decisions;
+    CHECK(decisions==2); /* Unused still receives its own generated step and result. */
+}
+
 static TfVerifiedCore *verify(TfCoreProgram *program) {
     TfVerifiedCore *verified=NULL;
     TfCoreVerifyIssue issue={0};
@@ -257,7 +322,15 @@ int main(void) {
     verified=verify(core);
     inspect_closures(tf_verified_core_data(verified));
     tf_verified_core_destroy(verified); tf_core_program_destroy(core);
+
+    f=prepare(manager,"tests/fixtures/types/core-machine.tfd");
+    allocations+=failpoints(f);
+    CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
+    release(f);
+    verified=verify(core);
+    inspect_machines(tf_verified_core_data(verified));
+    tf_verified_core_destroy(verified); tf_core_program_destroy(core);
     tf_source_manager_destroy(manager);
-    printf("Core ordinary lowering: %zu checks, %zu injected allocation failures\n",checks,allocations);
+    printf("Core lowering: %zu checks, %zu injected allocation failures\n",checks,allocations);
     return 0;
 }

@@ -44,10 +44,13 @@ static TfCoreTypeId find(const TfCoreProgramData *data, TfCoreTypeKind kind, con
 }
 
 static TfCoreTypeId find_decision(const TfCoreProgramData *data, TfCoreTypeId machine) {
+    TfCoreTypeId id = 0;
     for (size_t i=0; i<data->type_count; ++i)
         if (data->types[i].kind == TF_CORE_TYPE_DECISION &&
-            data->types[i].as.decision.machine == machine) return i+1;
-    CHECK(false); return 0;
+            data->types[i].as.decision.machine == machine) {
+            CHECK(id == 0); id = i+1;
+        }
+    return id;
 }
 
 static void inspect(TfCoreLowerTypes *types, const TfTypedProgram *program) {
@@ -138,6 +141,121 @@ static void growth_rollback(TfCoreLowerTypes *types, Count *counter) {
     CHECK(false);
 }
 
+static TfCoreTypeId check_decision(TfCoreLowerTypes *types, TfCoreTypeId machine,
+                                  TfCoreTypeId result) {
+    TfCoreProgramData view = {0};
+    tf_core_lower_type_view(types,&view);
+    CHECK(find_decision(&view,machine) == result);
+    const TfCoreType *layout = entry(&view,machine,TF_CORE_TYPE_MACHINE);
+    const TfCoreType *decision = entry(&view,result,TF_CORE_TYPE_DECISION);
+    CHECK(decision->as.decision.machine == machine &&
+          decision->as.decision.output == layout->as.machine.output &&
+          decision->as.decision.rejection == layout->as.machine.rejection);
+    const TfCoreTypeId list = decision->as.decision.emissions;
+    CHECK(entry(&view,list,TF_CORE_TYPE_LIST)->as.element == layout->as.machine.output);
+    return list;
+}
+
+static void machine_results(TfCoreLowerTypes *types, const TfMachineProgram *machines, Count *c) {
+    TfCoreProgramData view = {0};
+    tf_core_lower_type_view(types,&view);
+    const size_t before = view.type_count;
+    const size_t source_count = tf_type_store_count(tf_typed_program_store(tf_machine_program_typed(machines)));
+    const TfCoreTypeId quiet = find(&view,TF_CORE_TYPE_MACHINE,"Quiet");
+    const TfCoreTypeId uncalled = find(&view,TF_CORE_TYPE_MACHINE,"Uncalled");
+    const TfCoreTypeId existing = find(&view,TF_CORE_TYPE_MACHINE,"Existing");
+    const TfCoreTypeId feed = find(&view,TF_CORE_TYPE_MACHINE,"Feed");
+    const TfCoreTypeId known = find_decision(&view,existing);
+    const TfCoreTypeId explicit_result = find_decision(&view,feed);
+    const TfCoreTypeId box = find(&view,TF_CORE_TYPE_RECORD,"PacketBox");
+    CHECK(find_decision(&view,quiet) == 0 && find_decision(&view,uncalled) == 0);
+    for (size_t i=0; i<view.type_count; ++i)
+        CHECK(view.types[i].kind != TF_CORE_TYPE_LIST || view.types[i].as.element != box);
+
+    const size_t calls = c->calls;
+    CHECK(tf_core_lower_machine_id(types,NULL) == 0);
+    for (size_t i=0; i<tf_machine_program_count(machines); ++i) {
+        const TfMachinePlan *plan = tf_machine_program_at(machines,i);
+        const TfCoreTypeId id = tf_core_lower_machine_id(types,plan);
+        const TfCoreText name = entry(&view,id,TF_CORE_TYPE_MACHINE)->name;
+        CHECK(name.length == plan->name.length && memcmp(name.bytes,plan->name.data,name.length) == 0);
+        TfMachinePlan invalid = *plan;
+        invalid.type.declaration_index = 0;
+        CHECK(tf_core_lower_machine_id(types,&invalid) == 0);
+    }
+    TfCoreTypeId result = SIZE_MAX;
+    CHECK(tf_core_lower_decision(types,box,&result) == TF_HOST_ERROR && result == 0);
+    CHECK(tf_core_lower_decision(types,0,&result) == TF_HOST_ERROR && result == 0);
+    CHECK(tf_core_lower_decision(types,SIZE_MAX,&result) == TF_HOST_ERROR && result == 0);
+    CHECK(tf_core_lower_decision(NULL,feed,&result) == TF_HOST_ERROR && result == 0);
+    CHECK(tf_core_lower_decision(types,feed,NULL) == TF_HOST_ERROR);
+    CHECK(known != 0 && known <= source_count && explicit_result != 0 && explicit_result <= source_count);
+    CHECK(tf_core_lower_decision(types,feed,&result) == TF_OK && result == explicit_result);
+    CHECK(tf_core_lower_decision(types,existing,&result) == TF_OK && result == known);
+    CHECK(c->calls == calls);
+
+    CHECK(tf_core_lower_decision(types,quiet,&result) == TF_OK && result == before+1);
+    const TfCoreTypeId shared = check_decision(types,existing,known);
+    CHECK(check_decision(types,quiet,result) == shared);
+    CHECK(tf_core_lower_decision(types,uncalled,&result) == TF_OK && result == before+3);
+    const TfCoreTypeId emissions = check_decision(types,uncalled,result);
+    CHECK(emissions == before+2);
+    const size_t after = c->calls;
+    TfCoreTypeId duplicate = 0;
+    CHECK(tf_core_lower_decision(types,quiet,&duplicate) == TF_OK && duplicate == before+1);
+    CHECK(tf_core_lower_decision(types,uncalled,&duplicate) == TF_OK && duplicate == result);
+    CHECK(tf_core_lower_list(types,box,&duplicate) == TF_OK && duplicate == emissions);
+    CHECK(c->calls == after);
+    tf_core_lower_type_view(types,&view);
+    CHECK(view.type_count == before+3);
+}
+
+static void decision_growth_rollback(const TfMachineProgram *machines, const char *name,
+                                     bool needs_list) {
+    /* Fill one row at a time on fresh owners to find a growth boundary,
+     * without depending on the vector's initial size or growth factor. */
+    for (size_t fill=0; fill<256; ++fill) {
+        Count c = {0};
+        const TfAllocator a = {&c,allocate,deallocate};
+        TfCoreLowerTypes *types = NULL;
+        TfCoreProgramData view = {0};
+        CHECK(tf_core_lower_types_create(&types,machines,&a) == TF_OK);
+        tf_core_lower_type_view(types,&view);
+        const TfCoreTypeId machine = find(&view,TF_CORE_TYPE_MACHINE,name);
+        TfCoreTypeId element = find(&view,TF_CORE_TYPE_INT,NULL);
+        for (size_t i=0; i<fill; ++i) {
+            TfCoreTypeId list;
+            CHECK(tf_core_lower_list(types,element,&list) == TF_OK);
+            element = list;
+        }
+        tf_core_lower_type_view(types,&view);
+        const size_t before = view.type_count;
+        const size_t live = c.live;
+        TfCoreTypeId decision = SIZE_MAX;
+        c.fail = c.calls+1;
+        const TfStatus status = tf_core_lower_decision(types,machine,&decision);
+        c.fail = 0;
+        if (status == TF_OK) {
+            tf_core_lower_types_destroy(types);
+            CHECK(c.live == 0);
+            continue;
+        }
+        CHECK(status == TF_HOST_ERROR && decision == 0 && c.live == live);
+        tf_core_lower_type_view(types,&view);
+        CHECK(view.type_count == before && find_decision(&view,machine) == 0);
+        CHECK(tf_core_lower_decision(types,machine,&decision) == TF_OK);
+        CHECK(decision == before+(needs_list ? 2u : 1u));
+        const TfCoreTypeId list = check_decision(types,machine,decision);
+        CHECK(needs_list ? list == before+1 : list <= before);
+        tf_core_lower_type_view(types,&view);
+        CHECK(view.type_count == decision);
+        tf_core_lower_types_destroy(types);
+        CHECK(c.live == 0);
+        return;
+    }
+    CHECK(false);
+}
+
 int main(void) {
     TfSourceManager *manager = NULL;
     TfResolution *resolution = NULL;
@@ -157,6 +275,7 @@ int main(void) {
     CHECK(tf_core_lower_types_create(&types,machines,&a) == TF_OK);
     const size_t injected = c.calls;
     inspect(types,program);
+    machine_results(types,machines,&c);
     growth_rollback(types,&c);
     tf_core_lower_types_destroy(types);
     CHECK(c.live == 0 && injected != 0);
@@ -165,12 +284,15 @@ int main(void) {
         CHECK(tf_core_lower_types_create(&types,machines,&a) == TF_HOST_ERROR);
         CHECK(types == NULL && c.live == 0);
     }
+    decision_growth_rollback(machines,"Uncalled",true);
+    decision_growth_rollback(machines,"Quiet",false);
     CHECK(tf_core_lower_types_create(&types,NULL,&a) == TF_HOST_ERROR && types == NULL);
     tf_machine_program_destroy(machines);
     tf_typed_program_destroy(program);
     tf_signatures_destroy(signatures);
     tf_resolution_destroy(resolution);
     tf_source_manager_destroy(manager);
-    printf("Core layout translation: %zu checks, %zu injected allocation failures\n",checks,injected);
+    printf("Core layout translation: %zu checks, %zu create failures, 2 Decision growth retries\n",
+           checks,injected);
     return 0;
 }

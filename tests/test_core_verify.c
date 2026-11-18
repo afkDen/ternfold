@@ -403,8 +403,10 @@ static void tag_proofs(void) {
     expect(data, TF_CORE_VERIFY_TAG_PROOF); /* missing Some */
     root.operation.as.switch_tag.default_block = 3;
     blocks[2] = dead();
+    fn.value_count = 4;
     expect(data, TF_CORE_VERIFY_TERMINATOR); /* explicit unreachable cannot hide Some */
     blocks[2] = proved;
+    fn.value_count = 5;
     root.operation.as.switch_tag.case_count = 2;
     root.operation.as.switch_tag.default_block = 4;
     fn.block_count = 4;
@@ -527,12 +529,70 @@ static void entry_protocol(void) {
     }
 }
 
-typedef struct { size_t calls, fail, live; } Memory;
+static void snapshot_uses(void) {
+    TfCoreProgramData data = program();
+    const TfCoreParameter snapshot = {.value = 1, .type = TEXTS};
+    TfCoreLet lets[] = {
+        bind(3, TEXT, (TfCoreOperation){TF_CORE_OP_INPUT_AT, VALUES(1), {.input_index = 0}}),
+        bind(2, TEXT, (TfCoreOperation){TF_CORE_OP_INPUT_AT, VALUES(1), {.input_index = 1}}),
+        bind(4, TEXTS, (TfCoreOperation){TF_CORE_OP_LIST, VALUES(3, 2), {.element_type = TEXT}})
+    };
+    TfCoreBlock blocks[] = {block(lets, COUNT(lets), 4), block(NULL, 0, 5)};
+    TfCoreFunction fn = ordinary(&snapshot, 1, TEXTS, blocks, 1, 4);
+    const TfCoreOperation second_input = lets[1].operation;
+    data.entry = 1;
+    data.function_count = 1;
+    data.functions = &fn;
+    fn.kind = TF_CORE_FUNCTION_ENTRY_ONLY;
+    expect(data, TF_CORE_VERIFY_NONE); /* order is by binding, not ValueId */
+    lets[0].operation.as.input_index = 1;
+    CHECK(expect(data, TF_CORE_VERIFY_ENTRY).value == 3); /* no skipped first index */
+    lets[0].operation.as.input_index = 0;
+    lets[1].operation.as.input_index = 0;
+    CHECK(expect(data, TF_CORE_VERIFY_ENTRY).value == 2); /* no repeated index */
+    lets[1].operation.as.input_index = SIZE_MAX;
+    expect(data, TF_CORE_VERIFY_ENTRY);
+    lets[1].operation = second_input;
+
+    blocks[0].terminator.value = 1;
+    CHECK(expect(data, TF_CORE_VERIFY_ENTRY).value == 1); /* no direct export */
+    blocks[0].terminator.value = 4;
+    lets[2].operation = (TfCoreOperation){TF_CORE_OP_BINARY, VALUES(1, 1),
+                                                       {.binary = TF_CORE_BINARY_CONCAT}};
+    expect(data, TF_CORE_VERIFY_ENTRY);
+    lets[2].operation = (TfCoreOperation){TF_CORE_OP_BUILTIN, VALUES(1, 3),
+                                                   {.builtin = {TF_CORE_BUILTIN_APPEND, TYPES(TEXT)}}};
+    expect(data, TF_CORE_VERIFY_ENTRY);
+    lets[2].operation = (TfCoreOperation){TF_CORE_OP_LIST_MAP, VALUES(1),
+                                               {.list_map = {{.value = 5, .type = TEXT}, 2}}};
+    fn.block_count = 2;
+    fn.value_count = 5;
+    expect(data, TF_CORE_VERIFY_ENTRY); /* cannot iterate over the raw snapshot */
+    lets[2].operation.operands = VALUES(4);
+    expect(data, TF_CORE_VERIFY_VALUE); /* an ordinary forward reference still fails */
+    {
+        const TfCoreLet branch_lets[] = {
+            bind(2, BOOL, (TfCoreOperation){.kind = TF_CORE_OP_CONST, .as.constant = 3}),
+            bind(3, TEXTS, (TfCoreOperation){TF_CORE_OP_IF, VALUES(2), {.branch = {2, 3}}}),
+            bind(4, TEXTS, (TfCoreOperation){.kind = TF_CORE_OP_LIST, .as.element_type = TEXT})
+        };
+        const TfCoreLet empty = bind(5, TEXTS, (TfCoreOperation){.kind = TF_CORE_OP_LIST, .as.element_type = TEXT});
+        const TfCoreBlock branches[] = {
+            block(branch_lets, COUNT(branch_lets), 3), block(NULL, 0, 1), block(&empty, 1, 5)
+        };
+        fn.blocks = branches;
+        fn.block_count = COUNT(branches);
+        CHECK(expect(data, TF_CORE_VERIFY_ENTRY).block == 2); /* no branch export */
+    }
+}
+
+typedef struct { size_t calls, fail, live, largest, limit; } Memory;
 
 static void *allocate(void *context, size_t bytes) {
     Memory *m = context;
     void *p;
-    if (++m->calls == m->fail) return NULL;
+    if (bytes > m->largest) m->largest = bytes;
+    if (++m->calls == m->fail || (m->limit != 0 && bytes > m->limit)) return NULL;
     p = malloc(bytes);
     CHECK(p != NULL);
     ++m->live;
@@ -548,9 +608,12 @@ static void deallocate(void *context, void *p) {
 
 static void allocation_failures(void) {
     TfCoreProgramData data = program();
-    const TfCoreParameter p = {.value = 1, .type = INT};
-    const TfCoreBlock root = block(NULL, 0, 1);
-    TfCoreFunction fn = ordinary(&p, 1, INT, &root, 1, 1);
+    const TfCoreParameter p[] = {{.value = 1, .type = INT}, {.value = 2, .type = OPT_INT}};
+    const TfCoreTagCase cases[] = {{0, 2}, {1, 3}};
+    const TfCoreLet let = bind(3, INT, (TfCoreOperation){TF_CORE_OP_SWITCH_TAG, VALUES(2),
+                                                       {.switch_tag = {cases, COUNT(cases), 0}}});
+    const TfCoreBlock blocks[] = {block(&let, 1, 3), block(NULL, 0, 1), block(NULL, 0, 1)};
+    TfCoreFunction fn = ordinary(p, COUNT(p), INT, blocks, COUNT(blocks), 3);
     TfCoreProgram *owner = NULL;
     TfVerifiedCore *verified = NULL;
     TfCoreVerifyIssue issue = {0};
@@ -573,12 +636,19 @@ static void allocation_failures(void) {
         CHECK(verified == NULL && issue.code == TF_CORE_VERIFY_NONE && m.live == 0);
     }
     tf_core_program_destroy(owner);
-    owner = NULL;
-    fn.value_count = SIZE_MAX;
-    CHECK(tf_core_program_copy(&owner, &data, NULL) == TF_OK);
-    CHECK(tf_core_verify(&verified, owner, NULL, &issue) == TF_HOST_ERROR);
-    CHECK(verified == NULL && issue.code == TF_CORE_VERIFY_NONE);
-    tf_core_program_destroy(owner);
+    {
+        const size_t wrong_counts[] = {0, 2, 4, 50000000, SIZE_MAX};
+        for (size_t i = 0; i < COUNT(wrong_counts); ++i) {
+            owner = NULL;
+            fn.value_count = wrong_counts[i];
+            m = (Memory){.limit = 4096};
+            CHECK(tf_core_program_copy(&owner, &data, NULL) == TF_OK);
+            CHECK(tf_core_verify(&verified, owner, &allocator, &issue) == TF_SOURCE_ERROR);
+            CHECK(verified == NULL && issue.code == TF_CORE_VERIFY_VALUE && issue.function == 1);
+            CHECK(m.live == 0 && m.largest <= m.limit);
+            tf_core_program_destroy(owner);
+        }
+    }
     CHECK(tf_core_verify(&verified, NULL, NULL, &issue) == TF_HOST_ERROR);
     CHECK(verified == NULL);
     CHECK(tf_verified_core_data(NULL) == NULL);
@@ -624,6 +694,90 @@ static void deep_types(void) {
     free(types);
 }
 
+static void nested_defaults(void) {
+    enum { DEPTH = 16384 };
+    TfCoreProgramData data = program();
+    TfCoreType types[COUNT(baseline)];
+    TfCoreVariant *layout = calloc(DEPTH + 1, sizeof(*layout));
+    TfCoreTagCase *cases = calloc(DEPTH + 1, sizeof(*cases));
+    TfCoreBlock *blocks = calloc(2 * DEPTH + 5, sizeof(*blocks));
+    TfCoreLet *lets = calloc(DEPTH + 4, sizeof(*lets));
+    const TfCoreParameter p[] = {{.value = 1, .type = ENUM}, {.value = 2, .type = INT}};
+    const TfCoreValueId subject[] = {1};
+    const TfCoreFunction fn = ordinary(p, COUNT(p), INT, blocks, 2 * DEPTH + 5, DEPTH + 6);
+    const TfCoreTagCase later_case = {0, 2 * DEPTH + 4};
+    const TfCoreLet first_switch = bind(3, INT, (TfCoreOperation){TF_CORE_OP_SWITCH_TAG, {subject, 1},
+                                           {.switch_tag = {cases, 1, 2}}});
+    TfCoreLet root[] = {
+        first_switch,
+        bind(DEPTH + 5, INT, (TfCoreOperation){TF_CORE_OP_SWITCH_TAG, {subject, 1},
+                                          {.switch_tag = {&later_case, 1, 2 * DEPTH + 5}}})
+    };
+    CHECK(layout != NULL && cases != NULL && blocks != NULL && lets != NULL);
+    for (size_t i = 0; i < COUNT(types); ++i) types[i] = baseline[i];
+    for (size_t i = 0; i <= DEPTH; ++i) layout[i].payloads = (TfCoreTypeIds){int_arg, 1};
+    types[ENUM - 1].as.enumeration.variants = layout;
+    types[ENUM - 1].as.enumeration.variant_count = DEPTH + 1;
+    for (size_t i = 0; i < DEPTH; ++i) {
+        cases[i] = (TfCoreTagCase){i, DEPTH + i + 2};
+        lets[i] = bind(i + 3, INT, (TfCoreOperation){TF_CORE_OP_SWITCH_TAG, {subject, 1},
+                                                 {.switch_tag = {&cases[i], 1, i + 2}}});
+        blocks[i] = block(&lets[i], 1, i + 3);
+        blocks[DEPTH + i + 1] = block(NULL, 0, 2);
+    }
+    blocks[0] = block(root, COUNT(root), DEPTH + 5);
+    cases[DEPTH] = (TfCoreTagCase){0, 2 * DEPTH + 2};
+    lets[DEPTH] = bind(DEPTH + 3, INT, (TfCoreOperation){TF_CORE_OP_SWITCH_TAG, {subject, 1},
+                                       {.switch_tag = {&cases[DEPTH], 1, 2 * DEPTH + 3}}});
+    lets[DEPTH + 1] = bind(DEPTH + 4, INT, (TfCoreOperation){TF_CORE_OP_PAYLOAD, {subject, 1},
+                                                           {.payload = {DEPTH, 0}}});
+    blocks[DEPTH] = block(&lets[DEPTH], 2, DEPTH + 4);
+    blocks[2 * DEPTH + 1] = dead(); /* repeated exclusion already made this case impossible */
+    blocks[2 * DEPTH + 2] = block(NULL, 0, 2);
+    lets[DEPTH + 2] = bind(DEPTH + 6, INT, (TfCoreOperation){TF_CORE_OP_PAYLOAD, {subject, 1},
+                                                           {.payload = {0, 0}}});
+    blocks[2 * DEPTH + 3] = block(&lets[DEPTH + 2], 1, DEPTH + 6); /* tag 0 possible again */
+    blocks[2 * DEPTH + 4] = block(NULL, 0, 2);
+    data.types = types;
+    data.functions = &fn;
+    data.function_count = 1;
+    expect(data, TF_CORE_VERIFY_NONE);
+    lets[DEPTH + 1].operation.as.payload.tag = 0;
+    CHECK(expect(data, TF_CORE_VERIFY_TAG_PROOF).value == DEPTH + 4);
+    free(lets);
+    free(blocks);
+    free(cases);
+    free(layout);
+}
+
+static void structural_collision_stress(void) {
+    enum { TYPES_COUNT = 32768, SIGNATURES = 8192, NOMINALS = TYPES_COUNT - SIGNATURES };
+    TfCoreType *types = calloc(TYPES_COUNT, sizeof(*types));
+    TfCoreTypeId (*parameters)[2] = calloc(SIGNATURES, sizeof(*parameters));
+    const TfCoreProgramData data = {.types = types, .type_count = TYPES_COUNT};
+    const uintmax_t p = UINTMAX_C(16777619);
+    const uintmax_t seed = (((uintmax_t)TF_CORE_TYPE_FUNCTION * p) ^ UINTMAX_C(1)) * p;
+    size_t made = 0;
+    CHECK(types != NULL && parameters != NULL);
+    for (size_t i = 0; i < NOMINALS; ++i) types[i].kind = TF_CORE_TYPE_RECORD;
+    /* These distinct pairs formerly all started in the same hash slot. */
+    for (size_t a = 1; a <= NOMINALS && made < SIGNATURES; ++a) {
+        const size_t b = (size_t)(((seed ^ (uintmax_t)a) * p) % UINTMAX_C(65536));
+        if (b == 0 || b > NOMINALS) continue;
+        parameters[made][0] = a;
+        parameters[made][1] = b;
+        types[NOMINALS + made] = (TfCoreType){.kind = TF_CORE_TYPE_FUNCTION,
+                                            .as.function = {{parameters[made], 2}, 1}};
+        ++made;
+    }
+    CHECK(made == SIGNATURES);
+    expect(data, TF_CORE_VERIFY_NONE);
+    types[TYPES_COUNT - 1] = types[NOMINALS];
+    CHECK(expect(data, TF_CORE_VERIFY_TYPE).type == TYPES_COUNT);
+    free(parameters);
+    free(types);
+}
+
 int main(void) {
     metadata();
     ordinary_operations();
@@ -632,9 +786,12 @@ int main(void) {
     tag_proofs();
     bool_proofs();
     entry_protocol();
+    snapshot_uses();
     allocation_failures();
     deep_blocks();
     deep_types();
-    puts("Core verifier: metadata, all operations, lexical scopes, tag facts, entry, OOM and depth passed");
+    nested_defaults();
+    structural_collision_stress();
+    puts("Core verifier: metadata, operations, scopes, entry, OOM and adversarial stress passed");
     return 0;
 }
