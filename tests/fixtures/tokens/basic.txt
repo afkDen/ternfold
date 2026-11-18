@@ -1,0 +1,6 @@
+source_valid=true has_errors=false
+IDENT reserved=true bytes=[0,3) scalar=1:1..1:4 display=1..4 lexeme="Int" payload="Int" payload_bytes=3 error=null
+INT reserved=false bytes=[4,5) scalar=1:5..1:6 display=5..6 lexeme="7" payload="7" payload_bytes=1 error=null
+TRUE reserved=false bytes=[6,10) scalar=1:7..1:11 display=7..11 lexeme="true" payload=true payload_bytes=0 error=null
+TEXT reserved=false bytes=[11,18) scalar=1:12..1:19 display=12..19 lexeme="\"\\u{0}\"" payload="\u0000" payload_bytes=1 error=null
+EOF reserved=false bytes=[19,19) scalar=2:1..2:1 display=1..1 lexeme="" payload=null payload_bytes=0 error=null
