@@ -1,0 +1,3 @@
+error[E001]: source is not valid UTF-8
+  --> "raw.tfd" [bytes 0..1): 
+  raw | "\u00ff"
