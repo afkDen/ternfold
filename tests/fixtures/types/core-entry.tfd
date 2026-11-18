@@ -1,0 +1,9 @@
+fn prefix(line: Text) -> Text { "first:" ++ line }
+
+pub fn main() -> List[Text] {
+    input first: Text from stdin;
+    output prefix(first) to stdout;
+    input second: Text;
+    output second;
+    [second, first]
+}

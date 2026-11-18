@@ -1,0 +1,14 @@
+record Snapshot { amount: Float, option: Option[Int], label: Text }
+
+machine Seed(input_value: Unit) yields Unit rejects Unit {
+    state snapshot: Snapshot = Snapshot(label: "a\u{0}" ++ "b", option: Option::Some(-7 div 2), amount: 7 / 2);
+    state empty: List[Char] = [];
+    state safe: Bool = (Option::Some(0) != Option::None &&
+        Snapshot(amount: 0.0, option: Option::None, label: "") ==
+        Snapshot(amount: 0.0, option: Option::None, label: "")) || (1 div 0 == 0);
+    state absent: Option[Int] = Option::None;
+    next snapshot = snapshot;
+    next empty = empty;
+    next safe = safe;
+    next absent = absent;
+}
