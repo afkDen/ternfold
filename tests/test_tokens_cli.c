@@ -315,7 +315,7 @@ static void test_errors_caps(const char *exe) {
 }
 static void test_usage_host(const char *exe) {
     char path[PATH_CAPACITY], bad_path[PATH_CAPACITY], missing[PATH_CAPACITY], table[PATH_CAPACITY];
-    const char *commands[] = {"run","check","compile","ast","unknown"}; size_t i;
+    const char *commands[] = {"run","check","compile","unknown"}; size_t i;
     join_path(path,root,"valid.tfd"); write_text(path,"let a = 1;");
     join_path(missing,root,"missing");
     for (i = 0; i < sizeof(commands)/sizeof(commands[0]); ++i) {
@@ -384,6 +384,55 @@ static void test_examples(const char *exe) {
         join_path(table,root,"Symbol Table.txt"); equal(table,golden); free(golden); CHECK(remove(table) == 0);
     }
 }
+static void test_ast_cli(const char *exe) {
+    char path[PATH_CAPACITY], table[PATH_CAPACITY];
+    const char *args[] = {exe,"ast",path,"--json","--diagnostics-json",NULL};
+    char *first;
+    join_path(path,root,"ast.tfd");join_path(table,root,"Symbol Table.txt");
+    write_text(path,"pub fn main() -> List[Text] { input x: Text; output x; [x] }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==0);contains(output_path,"\"kind\":\"INPUT\"");
+    contains(output_path,"\"has_errors\":false");contains(error_path,"\"diagnostics\":[]");absent(table);
+    first=read_text(output_path);CHECK(spawn(args,CAPTURE,CAPTURE)==0);equal(output_path,first);free(first);
+    CHECK(spawn(args,BROKEN_PIPE,CAPTURE)==2);
+    write_text(path,"fn bad() -> Int { f( fn good() -> Int { 1 }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==1);contains(output_path,"\"has_errors\":true");
+    contains(output_path,"\"name\":\"good\"");contains(error_path,"E110");
+    CHECK(spawn(args,CAPTURE,BROKEN_PIPE)==2);
+    write_text(path,"machine M(x: Int) yields Int rejects Text { state a: Int = 0; next a = 1; output x; }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==1);contains(error_path,"E208");
+    write_text(path,"fn main() -> Int { 1 } fn f() -> Int { main() }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==0);contains(output_path,"\"kind\":\"CALL\"");
+    write_text(path,"\r");CHECK(spawn(args,CAPTURE,CAPTURE)==1);
+    equal(output_path,"{\"schema_version\":1,\"root\":null,\"has_errors\":true,\"nodes\":[]}\n");
+    contains(error_path,"E003");
+    write_text(path,"fn f() -> Int { @ }");CHECK(spawn(args,CAPTURE,CAPTURE)==1);
+    contains(error_path,"E101");contains(output_path,"\"kind\":\"ERROR\"");
+    {
+        const char *bad[] = {exe,"ast",path,"--symbol-table",root,NULL};
+        const char *duplicate[] = {exe,"ast",path,"--json","--json",NULL};
+        const char *text[] = {exe,"ast","tests/fixtures/parser/surface.tfd",NULL};
+        CHECK(spawn(bad,CAPTURE,CAPTURE)==2);absent(table);
+        CHECK(spawn(duplicate,CAPTURE,CAPTURE)==2);
+        CHECK(spawn(text,CAPTURE,CAPTURE)==0);contains(output_path,"AST root=1 has_errors=false");
+    }
+    {
+        char deep[512];size_t at=0;
+        memcpy(deep,"fn f() -> Int { ",16);at=16;
+        for(size_t i=0;i<150;++i)deep[at++]='(';
+        deep[at++]='1';
+        for(size_t i=0;i<150;++i)deep[at++]=')';
+        deep[at++]='}';deep[at]=0;write_text(path,deep);
+        CHECK(spawn(args,CAPTURE,CAPTURE)==2);contains(error_path,"nesting budget");equal(output_path,"");
+    }
+    {
+        const char *examples[]={"examples/intro/hello.tfd","examples/invalid/candidate_cycle.tfd",
+            "examples/course/main_io.tfd","examples/lexical/complete.tfd"};
+        for(size_t i=0;i<sizeof(examples)/sizeof(examples[0]);++i){
+            const char *one[]={exe,"ast",examples[i],"--json",NULL};
+            CHECK(spawn(one,CAPTURE,CAPTURE)==0);contains(output_path,"\"has_errors\":false");
+        }
+    }
+}
 typedef struct { size_t allocations; bool fail; } Memory;
 static void *allocate(void *context, size_t size) {
     Memory *m = context; ++m->allocations; return m->fail ? NULL : malloc(size);
@@ -416,7 +465,7 @@ static void test_writer_no_allocations(void) {
 int main(int argc, char **argv) {
     CHECK(argc == 2); setup();
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
-    test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
+    test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();test_ast_cli(argv[1]);
     (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
     return 0;
 }
