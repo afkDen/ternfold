@@ -9,6 +9,7 @@
 #include "ternfold/plan_dump.h"
 #include "ternfold/core_dump.h"
 #include "ternfold/core_lower.h"
+#include "execution/driver_run.h"
 
 #include <signal.h>
 #include <string.h>
@@ -25,10 +26,10 @@ static bool extension(const char *path) {
     size_t length = strlen(path);
     return length >= 4 && strcmp(path+length-4,".tfd") == 0;
 }
-typedef enum { INSPECT_CHECK, INSPECT_PLAN, INSPECT_CORE } InspectMode;
+typedef enum { INSPECT_CHECK, INSPECT_PLAN, INSPECT_CORE, EXECUTE_RUN } DriverMode;
 
 static int check_source(const char *path, const char *root, TfDiagnosticFormat format,
-                        InspectMode mode, bool json) {
+                        DriverMode mode, bool json, const char *input) {
     TfSourceManager *manager = NULL;
     TfResolution *resolution = NULL;
     TfTypedSignatures *signatures = NULL;
@@ -69,13 +70,13 @@ static int check_source(const char *path, const char *root, TfDiagnosticFormat f
         }
     }
     code = tf_diagnostic_bag_has_errors(shown) ? 1 : 0;
-    if (tf_diagnostic_bag_write(stderr,shown,format,
-                                TF_DIAG_COLOR_NEVER) != TF_OK || fflush(stderr) != 0)
+    if ((mode!=EXECUTE_RUN || code!=0) &&
+        (tf_diagnostic_bag_write(stderr,shown,format,TF_DIAG_COLOR_NEVER) != TF_OK || fflush(stderr) != 0))
         failure = "cannot write diagnostics";
     else if (code == 0) {
         if (mode == INSPECT_PLAN) {
             if (tf_plan_dump_write(stdout,machines,json) != TF_OK) failure = "cannot write machine plan";
-        } else if (mode == INSPECT_CORE) {
+        } else if (mode == INSPECT_CORE || mode == EXECUTE_RUN) {
             TfCoreLowerIssue lowering = {0};
             TfCoreVerifyIssue verification = {0};
             if (tf_core_lower(&core,machines,NULL,&lowering) != TF_OK) {
@@ -84,12 +85,14 @@ static int check_source(const char *path, const char *root, TfDiagnosticFormat f
                     "cannot lower to Core (resource limit or compiler invariant failure)";
             } else if (tf_core_verify(&verified,core,NULL,&verification) != TF_OK) {
                 failure = "cannot verify lowered Core (resource limit or compiler invariant failure)";
+            } else if (mode==EXECUTE_RUN) {
+                code=tf_run_verified(verified,shown,input,format,&failure);
             } else if (tf_core_dump_write(stdout,verified) != TF_OK) {
                 failure = "cannot write Core";
             }
-        } else if (fputs("Frontend checks succeeded; execution and C generation are unavailable.\n",stdout) == EOF)
+        } else if (fputs("Frontend checks succeeded.\n",stdout) == EOF)
             failure = "cannot write check result";
-        if (fflush(stdout) != 0 && failure == NULL) failure = "cannot write inspection result";
+        if (mode!=EXECUTE_RUN && fflush(stdout) != 0 && failure == NULL) failure = "cannot write inspection result";
     }
 done:
     tf_verified_core_destroy(verified);
@@ -108,10 +111,10 @@ int main(int argc, char **argv) {
     TfLexResult lex = {0};
     TfParseResult *parsed = NULL;
     const TfDiagnosticBag *shown;
-    bool ast_mode, check_mode, plan_mode, core_mode;
+    bool ast_mode, check_mode, plan_mode, core_mode, run_mode;
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
-    const char *directory = NULL, *root = NULL, *failure = NULL;
+    const char *directory = NULL, *root = NULL, *input = NULL, *failure = NULL;
     TfStatus status;
     int i, code = 2;
 #ifdef _WIN32
@@ -126,7 +129,8 @@ int main(int argc, char **argv) {
                   "       ternfold check source.tfd [--root DIR] [--diagnostics-json]\n"
                   "       ternfold plan source.tfd [--root DIR] [--json] [--diagnostics-json]\n"
                   "       ternfold core source.tfd [--root DIR] [--diagnostics-json]\n"
-                  "Check validates the frontend, including machine scheduling; run/compile are unavailable.\n"
+                  "       ternfold run source.tfd [--root DIR] [--stdin-file FILE] [--diagnostics-json]\n"
+                  "Check validates the frontend, including machine scheduling.\n"
                   "Core prints verified, structured intermediate code without executing it.\n"
                   "--json: tokens, AST or plan schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
@@ -134,31 +138,34 @@ int main(int argc, char **argv) {
                   "Paths follow native SourceManager capabilities (Windows ANSI, queryable insensitive ancestors).\n"
                   "AST JSON schema v1 uses stable node IDs; recovery trees are inspection only.\n"
                   "Invalid source: AST root=null, has_errors=true, empty nodes (no invented syntax).\n"
-                  "Exit: 0 requested phase succeeded, 1 diagnosed input error, 2 usage/host/output failure.\n",stdout) == EOF ||
+                  "Exit: 0 success, 1 diagnosed source error, 2 usage/host/output failure, 3 runtime fault.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
     }
     if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0 &&
                      strcmp(argv[1],"check") != 0 && strcmp(argv[1],"plan") != 0 &&
-                     strcmp(argv[1],"core") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
-        return driver_error("expected tokens/ast/check/plan/core source.tfd; use --help (run/compile are unavailable)",2);
+                     strcmp(argv[1],"core") != 0 && strcmp(argv[1],"run") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
+        return driver_error("expected tokens/ast/check/plan/core/run source.tfd; use --help",2);
     ast_mode = strcmp(argv[1],"ast") == 0;
     check_mode = strcmp(argv[1],"check") == 0;
     plan_mode = strcmp(argv[1],"plan") == 0;
     core_mode = strcmp(argv[1],"core") == 0;
+    run_mode = strcmp(argv[1],"run") == 0;
     for (i = 3; i < argc; ++i) {
-        if (!check_mode && !core_mode && strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
+        if (!check_mode && !core_mode && !run_mode && strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
         else if (strcmp(argv[i],"--diagnostics-json") == 0 && diagnostic_format == TF_DIAG_TEXT) diagnostic_format = TF_DIAG_JSON;
-        else if (!ast_mode && !check_mode && !plan_mode && !core_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
+        else if (!ast_mode && !check_mode && !plan_mode && !core_mode && !run_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
                  argv[i+1][0] != '-') directory = argv[++i];
-        else if ((check_mode || plan_mode || core_mode) && strcmp(argv[i],"--root") == 0 && root == NULL && i+1 < argc &&
+        else if ((check_mode || plan_mode || core_mode || run_mode) && strcmp(argv[i],"--root") == 0 && root == NULL && i+1 < argc &&
                  argv[i+1][0] != '\0' && argv[i+1][0] != '-') root = argv[++i];
+        else if (run_mode && strcmp(argv[i],"--stdin-file") == 0 && input == NULL && i+1 < argc &&
+                 argv[i+1][0] != '\0' && argv[i+1][0] != '-') input = argv[++i];
         else return driver_error("unknown, duplicate or incomplete option; use --help",2);
     }
     if (!extension(argv[2])) return driver_error("source file extension must be exactly .tfd",1);
-    if (check_mode || plan_mode || core_mode)
-        return check_source(argv[2],root,diagnostic_format,core_mode ? INSPECT_CORE :
-                            plan_mode ? INSPECT_PLAN : INSPECT_CHECK,dump_format == TF_TOKEN_DUMP_JSON);
+    if (check_mode || plan_mode || core_mode || run_mode)
+        return check_source(argv[2],root,diagnostic_format,run_mode ? EXECUTE_RUN : core_mode ? INSPECT_CORE :
+                            plan_mode ? INSPECT_PLAN : INSPECT_CHECK,dump_format == TF_TOKEN_DUMP_JSON,input);
     if (tf_source_manager_create(&manager,NULL) != TF_OK || tf_diagnostic_bag_create(&bag,100,NULL) != TF_OK) {
         failure = "cannot allocate compiler session"; goto cleanup;
     }
