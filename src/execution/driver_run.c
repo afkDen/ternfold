@@ -24,6 +24,12 @@ done:
     return ok;
 }
 
+int tf_driver_missing_entry(const TfDiagnosticBag *frontend, TfDiagnosticFormat format,
+                            const char *message, const char **failure) {
+    if (!report(frontend,format,"E208",message,NULL,0)) *failure="cannot write entry diagnostic";
+    return 1;
+}
+
 static bool report_fault(const TfCoreProgramData *data, const TfDiagnosticBag *front,
                          TfDiagnosticFormat format, TfRuntimeFault fault) {
     static const struct { const char *code,*message; } messages[]={
@@ -51,11 +57,8 @@ int tf_run_verified(const TfVerifiedCore *program, const TfDiagnosticBag *front,
                     const char *input_path, TfDiagnosticFormat format, const char **failure) {
     const TfCoreProgramData *data=tf_verified_core_data(program);
     const TfCoreFunction *entry=tf_core_function(data,data->entry);
-    if (entry==NULL) {
-        if (!report(front,format,"E208","run requires a root pub fn main() -> List[Text]",NULL,0))
-            *failure="cannot write entry diagnostic";
-        return 1;
-    }
+    if (entry==NULL)
+        return tf_driver_missing_entry(front,format,"run requires a root pub fn main() -> List[Text]",failure);
     const TfCoreBlock *body=tf_core_block(entry,entry->body);
     bool needs_input=false;
     if (entry->kind==TF_CORE_FUNCTION_ENTRY_ONLY)

@@ -68,3 +68,65 @@ static tf_status callback(tf_stack *s,tf_stack_frame *f,bool fold) {
 
 tf_status tf_stack_map_resume(tf_stack *s,tf_stack_frame *f) { return callback(s,f,false); }
 tf_status tf_stack_fold_resume(tf_stack *s,tf_stack_frame *f) { return callback(s,f,true); }
+
+typedef struct Loop Loop;
+struct Loop { Loop *parent; size_t count,used,bytes; tf_value items[]; };
+
+static void drop_loop(tf_stack *s,tf_stack_frame *f) {
+    Loop *loop=f->auxiliary;
+    f->auxiliary=loop->parent;
+    while (loop->used!=0) tf_release(&loop->items[--loop->used]);
+    s->ctx->live_bytes-=loop->bytes;
+    s->ctx->config.allocator.deallocate(s->ctx->config.allocator.user,loop);
+}
+
+static void drop_loops(tf_stack *s,tf_stack_frame *f) {
+    while (f->auxiliary!=NULL) drop_loop(s,f);
+    f->cleanup=NULL;
+}
+
+tf_status tf_loop_begin(tf_stack *s,tf_stack_frame *f,tf_span_id span,tf_value list) {
+    tf_context *ctx=s->ctx;
+    size_t count;
+    if (f->cleanup!=NULL && f->cleanup!=drop_loops) return tf_context_fail(ctx,TF_R004,span);
+    if (tf_list_length(ctx,span,list,&count)!=TF_OK) return TF_FAULT;
+    if (count>(SIZE_MAX-sizeof(Loop))/sizeof(tf_value)) return tf_context_fail(ctx,TF_R003,span);
+    const size_t bytes=sizeof(Loop)+count*sizeof(tf_value);
+    if (bytes>ctx->config.byte_budget-ctx->live_bytes) return tf_context_fail(ctx,TF_R003,span);
+    Loop *loop=ctx->config.allocator.allocate(ctx->config.allocator.user,bytes);
+    if (loop==NULL) return tf_context_fail(ctx,TF_R003,span);
+    *loop=(Loop){f->auxiliary,count,0,bytes};
+    ctx->live_bytes+=bytes;
+    f->auxiliary=loop; f->cleanup=drop_loops;
+    return TF_OK;
+}
+
+tf_status tf_loop_element(tf_stack *s,tf_stack_frame *f,tf_span_id span,tf_value list,
+                           tf_value *out,bool *done) {
+    *out=tf_unit(); *done=false;
+    if (tf_context_fault(s->ctx)!=NULL) return TF_FAULT;
+    const Loop *loop=f->auxiliary;
+    if (loop==NULL || f->cleanup!=drop_loops) return tf_context_fail(s->ctx,TF_R004,span);
+    *done=loop->used==loop->count;
+    return *done ? TF_OK : tf_list_at(s->ctx,span,list,loop->used,out);
+}
+
+tf_status tf_loop_keep(tf_stack *s,tf_stack_frame *f,tf_span_id span,tf_value value) {
+    Loop *loop=f->auxiliary;
+    if (loop==NULL || f->cleanup!=drop_loops || loop->used==loop->count)
+        return tf_context_fail(s->ctx,TF_R004,span);
+    if (tf_retain(s->ctx,span,value,&loop->items[loop->used])!=TF_OK) return TF_FAULT;
+    ++loop->used;
+    return TF_OK;
+}
+
+tf_status tf_loop_finish(tf_stack *s,tf_stack_frame *f,tf_span_id span,tf_type_id result,tf_value *out) {
+    *out=tf_unit();
+    const Loop *loop=f->auxiliary;
+    if (loop==NULL || f->cleanup!=drop_loops || loop->used!=loop->count)
+        return tf_context_fail(s->ctx,TF_R004,span);
+    if (tf_list(s->ctx,span,result,loop->items,loop->used,out)!=TF_OK) return TF_FAULT;
+    drop_loop(s,f);
+    if (f->auxiliary==NULL) f->cleanup=NULL;
+    return TF_OK;
+}
