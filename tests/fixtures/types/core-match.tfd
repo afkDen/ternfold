@@ -1,5 +1,6 @@
 enum Choice { Empty, Pair(Bool, Bool), Wrapped(Option[Bool], Unit) }
 enum Payload { Pair(Int, Bool), Empty }
+enum Floating { Pair(Float, Bool) }
 
 fn once(x: Option[Option[Bool]]) -> Option[Option[Bool]] { x }
 
@@ -35,6 +36,14 @@ fn mixed(x: Payload) -> Int {
 
 fn floats(x: Float) -> Int {
     match x { -1.25 => { 40 }, -0.0 => { 41 }, _ => { 42 } }
+}
+
+fn same_literal(x: Floating) -> Int {
+    match x {
+        Floating::Pair(-0.0, true) => { 43 },
+        Floating::Pair(0e10, false) => { 44 },
+        _ => { 45 }
+    }
 }
 
 fn texts(x: Text) -> Int {
