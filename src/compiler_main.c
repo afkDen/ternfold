@@ -1,6 +1,8 @@
 #include "ternfold/source_manager.h"
 #include "ternfold/diagnostics.h"
 #include "ternfold/token_dump.h"
+#include "ternfold/parser.h"
+#include "ternfold/ast_dump.h"
 
 #include <signal.h>
 #include <string.h>
@@ -22,6 +24,9 @@ int main(int argc, char **argv) {
     TfDiagnosticBag *bag = NULL;
     const TfManagedSource *entry = NULL;
     TfLexResult lex = {0};
+    TfParseResult *parsed = NULL;
+    const TfDiagnosticBag *shown;
+    bool ast_mode;
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
     const char *directory = NULL, *failure = NULL;
@@ -35,21 +40,25 @@ int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1],"--help") == 0) {
         if (fputs("Usage: ternfold tokens source.tfd [--json] [--diagnostics-json] [--symbol-table DIR]\n"
                   "Options follow source, in any order, once each. DIR must already exist.\n"
-                  "Inspects lexical tokens only; no parsing, checking, execution or C compilation.\n"
+                  "       ternfold ast source.tfd [--json] [--diagnostics-json]\n"
+                  "Inspects tokens or syntax/recovery AST; check/run/compile are unavailable.\n"
                   "--json: token schema v1 on stdout; --diagnostics-json: diagnostic schema v2 on stderr.\n"
                   "Invalid source: empty tokens, source_valid=false; diagnostics carry raw byte ranges.\n"
                   "No Symbol Table.txt is written without --symbol-table. Driver errors remain text.\n"
                   "Paths follow native SourceManager capabilities (Windows ANSI, queryable insensitive ancestors).\n"
-                  "Exit: 0 lexical success, 1 extension/source/lexical error, 2 usage/host/output failure.\n",stdout) == EOF ||
+                  "AST JSON schema v1 uses stable node IDs; recovery trees are inspection only.\n"
+                  "Invalid source: AST root=null, has_errors=true, empty nodes (no invented syntax).\n"
+                  "Exit: 0 syntax/lexical success, 1 diagnosed input error, 2 usage/host/output failure.\n",stdout) == EOF ||
             fflush(stdout) != 0) return 2;
         return fflush(stderr) == 0 ? 0 : 2;
     }
-    if (argc < 3 || strcmp(argv[1],"tokens") != 0 || argv[2][0] == '\0' || argv[2][0] == '-')
-        return driver_error("expected tokens source.tfd; use --help (check/run/compile are unavailable)",2);
+    if (argc < 3 || (strcmp(argv[1],"tokens") != 0 && strcmp(argv[1],"ast") != 0) || argv[2][0] == '\0' || argv[2][0] == '-')
+        return driver_error("expected tokens/ast source.tfd; use --help (check/run/compile are unavailable)",2);
+    ast_mode = strcmp(argv[1],"ast") == 0;
     for (i = 3; i < argc; ++i) {
         if (strcmp(argv[i],"--json") == 0 && dump_format == TF_TOKEN_DUMP_TEXT) dump_format = TF_TOKEN_DUMP_JSON;
         else if (strcmp(argv[i],"--diagnostics-json") == 0 && diagnostic_format == TF_DIAG_TEXT) diagnostic_format = TF_DIAG_JSON;
-        else if (strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
+        else if (!ast_mode && strcmp(argv[i],"--symbol-table") == 0 && directory == NULL && i+1 < argc && argv[i+1][0] != '\0' &&
                  argv[i+1][0] != '-') directory = argv[++i];
         else return driver_error("unknown, duplicate or incomplete option; use --help",2);
     }
@@ -64,20 +73,33 @@ int main(int argc, char **argv) {
         code = 1;
     } else {
         status = tf_lex(&lex,entry->source,100,NULL);
-        if (status == TF_HOST_ERROR || tf_diagnostic_bag_lexer(bag,&lex) != TF_OK) {
+        if (status == TF_HOST_ERROR || (!ast_mode && tf_diagnostic_bag_lexer(bag,&lex) != TF_OK)) {
             failure = "cannot build lexical result or diagnostics"; goto cleanup;
         }
         code = status == TF_LEX_ERROR ? 1 : 0;
+        if (ast_mode) {
+            if (tf_parse(&parsed,&lex,NULL,NULL) != TF_OK) {
+                failure = "cannot build syntax result (allocation/nesting budget failure)"; goto cleanup;
+            }
+            code = tf_diagnostic_bag_has_errors(tf_parse_diagnostics(parsed)) ? 1 : 0;
+        }
     }
     if (directory != NULL && tf_report_publish(entry->source->valid ? &lex : NULL,entry->source,directory) != TF_OK) {
         code = 2; failure = "cannot publish Symbol Table.txt";
     }
-    if (tf_token_dump_write(stdout,entry->source,entry->source->valid ? &lex : NULL,dump_format) != TF_OK ||
-        fflush(stdout) != 0) { code = 2; failure = "cannot write token output"; }
-    if (tf_diagnostic_bag_write(stderr,bag,diagnostic_format,TF_DIAG_COLOR_NEVER) != TF_OK ||
+    if (ast_mode) {
+        if (parsed != NULL) status = tf_ast_dump_write(stdout,tf_parse_ast(parsed),code == 1,dump_format == TF_TOKEN_DUMP_JSON);
+        else status = fputs(dump_format == TF_TOKEN_DUMP_JSON ?
+            "{\"schema_version\":1,\"root\":null,\"has_errors\":true,\"nodes\":[]}\n" :
+            "AST root=null has_errors=true nodes=0\n",stdout) == EOF ? TF_HOST_ERROR : TF_OK;
+    } else status = tf_token_dump_write(stdout,entry->source,entry->source->valid ? &lex : NULL,dump_format);
+    if (status != TF_OK ||
+        fflush(stdout) != 0) { code = 2; failure = ast_mode ? "cannot write AST output" : "cannot write token output"; }
+    shown = parsed != NULL ? tf_parse_diagnostics(parsed) : bag;
+    if (tf_diagnostic_bag_write(stderr,shown,diagnostic_format,TF_DIAG_COLOR_NEVER) != TF_OK ||
         fflush(stderr) != 0) { code = 2; failure = "cannot write diagnostics"; }
 cleanup:
-    tf_lex_destroy(&lex); tf_diagnostic_bag_destroy(bag); tf_source_manager_destroy(manager);
+    tf_parse_destroy(parsed); tf_lex_destroy(&lex); tf_diagnostic_bag_destroy(bag); tf_source_manager_destroy(manager);
     if (failure != NULL) return driver_error(failure,2);
     return code;
 }
