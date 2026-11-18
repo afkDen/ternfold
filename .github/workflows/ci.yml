@@ -54,10 +54,32 @@ jobs:
           ./benchmarks/three-way.ps1 $env:TF_CI_MODE -Compiler $env:TF_CI_CC
           ./experiments/composition/run.ps1 -Compiler $env:TF_CI_CC -Sanitize:($env:TF_CI_MODE -eq 'sanitize')
 
+  historical-stages:
+    name: Replayed stage (${{ matrix.stage }})
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stage: [source, parser, types, execution, native]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          $cc = ./scripts/windows-toolchain.ps1
+          "TF_CI_CC=$cc" >> $env:GITHUB_ENV
+      - name: Exercise the historical compiler stage
+        env:
+          TF_HISTORY_STAGE: ${{ matrix.stage }}
+        run: ./scripts/check-history.ps1 -Stage $env:TF_HISTORY_STAGE -Compiler $env:TF_CI_CC
+
   release:
     name: Verify and publish release assets
     if: github.ref_type == 'tag'
-    needs: [windows, history]
+    needs: [windows, history, historical-stages]
     runs-on: windows-2025
     timeout-minutes: 35
     permissions:

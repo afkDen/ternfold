@@ -51,3 +51,28 @@ the SHA shown on each Actions page.
 The repository keeps the original public import commits and the `v0.2.0`
 tag. The reconstructed history joins them through a merge with no compiler
 source changes.
+
+## Replaying selected stages
+
+CI extracts five reconstructed conformance snapshots into fresh directories
+and compiles their original focused tests with strict C17 warnings:
+
+| Snapshot | Check |
+| --- | --- |
+| M01 | SourceManager cache and source handling |
+| M04 | Parser and AST behavior |
+| M06 | Static expression checking |
+| M09 | Verified Core interpretation |
+| M11 | Structured C17 emission |
+
+These jobs rerun the selected stage tests now. They do not establish that every
+intermediate commit builds or that earlier GitHub CI existed.
+
+To replay a stage locally from a clone with complete history:
+
+```powershell
+./scripts/check-history.ps1 -Stage parser -Compiler $cc
+```
+
+The stage can be `source`, `parser`, `types`, `execution` or `native`.
+The checkpoint map lives in [history/checkpoints.json](history/checkpoints.json).
