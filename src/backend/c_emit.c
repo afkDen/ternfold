@@ -1,6 +1,7 @@
 #include "ternfold/c_emit.h"
 #include "c_nodes.h"
 #include "c_metadata.h"
+#include "lifetimes.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@ typedef struct {
     const TfCoreProgramData *core;
     size_t next_helper;
     bool failed;
+    TfNativeLifetimes **lifetimes;
 } Emitter;
 
 static void line(Emitter *e,const char *format,...) {
@@ -217,6 +219,11 @@ static void body(Emitter *e,const TfCBody *c,TfCoreFunctionId id) {
                      p->kind==TF_CORE_TRACE_GUARD ? "TF_TRACE_GUARD" : "TF_TRACE_EMISSION",
                      p->span,p->ordinal,p->value-1);
             }
+            if (e->lifetimes != NULL) {
+                const TfCoreValueIds releases=tf_native_lifetimes_releases(e->lifetimes[id-1],j);
+                for (size_t r=0;r<releases.count;++r)
+                    line(e,"    tf_release(&v[%zu]);\n",releases.items[r]-1);
+            }
             if (j<block->let_count) operation(e,c,&block->lets[j]);
         }
         if (block->terminator.kind==TF_CORE_UNREACHABLE) {
@@ -385,11 +392,10 @@ static void launcher(Emitter *e) {
            "    int status = 2;\n"
            "    if (trace_path != NULL) {\n"
            "        records = calloc(TF_TRACE_IO_MAX_RECORDS, sizeof *records);\n"
-           "        if (records == NULL) goto done;\n"
-           "        (void)tf_trace_recorder_init(&observer, records, TF_TRACE_IO_MAX_RECORDS);\n"
+           "        if (records != NULL) (void)tf_trace_recorder_init(&observer, records, TF_TRACE_IO_MAX_RECORDS);\n"
            "    }\n"
            "    if (tf_stack_init(&instance.stack, &ctx, &tf_body_program, ctx.config.call_limit) != TF_OK) goto done;\n"
-           "    instance.stack.observer = trace_path == NULL ? NULL : &observer;\n");
+           "    instance.stack.observer = records == NULL ? NULL : &observer;\n");
     if (entry!=NULL && entry->kind==TF_CORE_FUNCTION_ENTRY_ONLY) {
         if (input) {
             line(e,"    {\n"
@@ -426,8 +432,8 @@ static void launcher(Emitter *e) {
            "    if (fault != NULL) { tf_show_fault(fault); status = 3; }\n"
            "    else (void)fputs(\"cannot execute verified Core on this host\\n\", stderr);\n"
            "done:\n"
-           "    if (trace_path != NULL && records != NULL &&\n"
-           "        tf_trace_artifact_write(trace_path, &observer, tf_origins, tf_origin_count) != TF_TRACE_IO_OK) {\n"
+           "    if (trace_path != NULL && (records == NULL ||\n"
+           "        tf_trace_artifact_write(trace_path, &observer, tf_origins, tf_origin_count) != TF_TRACE_IO_OK)) {\n"
            "        (void)fputs(\"cannot write new trace artifact and source map\\n\", stderr); status = 2;\n"
            "    }\n"
            "    free(records);\n"
@@ -438,7 +444,7 @@ static void launcher(Emitter *e) {
            "}\n");
 }
 
-TfStatus tf_c_emit(FILE *out,const TfVerifiedCore *verified) {
+static TfStatus emit(FILE *out,const TfVerifiedCore *verified,bool shorten) {
     const TfCoreProgramData *core=tf_verified_core_data(verified);
     if (out==NULL || core==NULL || ferror(out) || core->type_count==SIZE_MAX ||
         core->function_count==SIZE_MAX || core->function_count>SIZE_MAX/sizeof(TfCBody)) return TF_HOST_ERROR;
@@ -448,8 +454,14 @@ TfStatus tf_c_emit(FILE *out,const TfVerifiedCore *verified) {
     /* Retain a valid array base even for a library with no functions. */
     TfCBody *plans=calloc(functions!=0 ? functions : 1,sizeof *plans);
     if (plans==NULL) return TF_HOST_ERROR;
-    for (size_t i=0;i<functions;++i)
+    if (shorten) {
+        e.lifetimes=calloc(functions!=0 ? functions : 1,sizeof *e.lifetimes);
+        if (e.lifetimes==NULL) { free(plans); return TF_HOST_ERROR; }
+    }
+    for (size_t i=0;i<functions;++i) {
         if (tf_c_body(&plans[i],verified,i+1)!=TF_OK || plans[i].function==NULL) { e.failed=true; break; }
+        if (shorten && tf_native_lifetimes(&e.lifetimes[i],verified,i+1,NULL)!=TF_OK) { e.failed=true; break; }
+    }
     if (!e.failed) {
         line(&e,"/* Ternfold 0.2: generated from verified Core. */\n"
                 "#include \"ternfold_rt_stack.h\"\n#include \"ternfold_rt_numeric.h\"\n"
@@ -465,6 +477,24 @@ TfStatus tf_c_emit(FILE *out,const TfVerifiedCore *verified) {
         launcher(&e);
     }
     for (size_t i=0;i<functions;++i) tf_c_body_destroy(&plans[i]);
+    if (e.lifetimes!=NULL) {
+        for (size_t i=0;i<functions;++i) tf_native_lifetimes_destroy(e.lifetimes[i]);
+        free(e.lifetimes);
+    }
     free(plans);
     return e.failed || ferror(out) ? TF_HOST_ERROR : TF_OK;
+}
+
+TfStatus tf_c_emit_optimized(FILE *out,const TfVerifiedCore *verified,TfCoreOptLevel level) {
+    if (level==TF_CORE_OPT_LEVEL_0) return emit(out,verified,false);
+    if (level!=TF_CORE_OPT_LEVEL_1) return TF_HOST_ERROR;
+    TfCoreOptimization *owner=NULL;
+    if (tf_core_optimize(&owner,verified,level,NULL)!=TF_OK) return TF_HOST_ERROR;
+    const TfStatus status=emit(out,tf_core_optimization_verified(owner),true);
+    tf_core_optimization_destroy(owner);
+    return status;
+}
+
+TfStatus tf_c_emit(FILE *out,const TfVerifiedCore *verified) {
+    return tf_c_emit_optimized(out,verified,TF_CORE_OPT_LEVEL_0);
 }

@@ -87,16 +87,13 @@ int tf_run_verified_traced(const TfVerifiedCore *program, const TfDiagnosticBag 
     TfInterpreterResult *result=NULL;
     TfRuntimeFault fault;
     TfTraceRecord *records=trace_path ? calloc(TF_TRACE_IO_MAX_RECORDS,sizeof *records) : NULL;
-    if (trace_path && !records) {
-        tf_input_snapshot_destroy(&input); *failure="cannot allocate trace buffer"; return 2;
-    }
     TfTraceRecorder trace;
     (void)tf_trace_recorder_init(&trace,records,trace_path ? TF_TRACE_IO_MAX_RECORDS : 0);
     const TfStatus status=tf_interpret_entry_traced(&result,program,input.lines,input.count,NULL,NULL,&fault,
-                                                   trace_path ? &trace : NULL);
+                                                   records ? &trace : NULL);
     tf_input_snapshot_destroy(&input);
-    bool trace_failed=false;
-    if (trace_path) {
+    bool trace_failed=trace_path && !records;
+    if (trace_path && records) {
         TfTraceOrigin *origins=data->span_count<=32768 ? calloc(data->span_count+1,sizeof *origins) : NULL;
         if (!origins) trace_failed=true;
         else {

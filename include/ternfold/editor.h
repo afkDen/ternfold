@@ -18,7 +18,9 @@ bool tf_editor_byte(const TfSource *source, TfEditorPosition position, size_t *o
  * overlay. TF_OK includes diagnosed errors. Invalid UTF-8 retains source
  * diagnostics. HOST_ERROR clears *out; all objects use supplied allocator.
  * Snapshot/allocator context must outlive diagnostics, source and type borrows.
- * Versions are nonnegative; cancelled publication never exposes hover/results.
+ * Versions are signed; cancelled publication never exposes hover/results.
+ * All snapshot allocations share a 32 MiB live budget. Root plus dependency
+ * source bytes are capped at 1 MiB before later semantic stages proceed.
  * Cancellation changes publication state only; no concurrent use is allowed. */
 TfStatus tf_editor_snapshot_create(TfEditorSnapshot **out, const char *name,
     const void *bytes, size_t length, int64_t version, const char *root,
@@ -33,10 +35,11 @@ void tf_editor_cancel(TfEditorSnapshot *snapshot);
 
 /* Blocking, single-document, full-sync LSP subset; binary borrowed streams.
  * Caller owns binary mode, streams and final flush. No ambient stdio/logging.
- * Bounds: 1 MiB frame/source, 4096 header bytes, 1024 JSON tokens, depth 32,
+ * Bounds: 1 MiB frame/aggregate sources, 4096 header bytes, 1024 JSON tokens, depth 32,
  * 2 MiB response. EOF between frames returns OK; truncated/malformed framing,
  * I/O/OOM/compiler host errors return HOST_ERROR. No subprocesses/downloads.
- * See docs/editor-tooling.md for lifecycle/cancellation/import limitations. */
+ * Up to 32 queued cancellations; excess stops the service with HOST_ERROR
+ * rather than silently losing a cancellation. See docs/editor-tooling.md. */
 TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root,
                          const TfAllocator *allocator);
 #endif

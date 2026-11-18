@@ -147,7 +147,7 @@ static const char *build_file(const char *cc, const char *root, const char *sour
 const char *tf_driver_native(const TfVerifiedCore *core, const TfResolution *resolution,
                              const TfDriverNativeOptions *options, bool build) {
     if (!build && options->output==NULL)
-        return tf_c_emit(stdout,core)==TF_OK && fflush(stdout)==0 ? NULL : "cannot emit C17";
+        return tf_c_emit_optimized(stdout,core,options->optimization)==TF_OK && fflush(stdout)==0 ? NULL : "cannot emit C17";
     const char *cc=options->compiler;
     if (build && cc==NULL) cc=getenv("TF_CC");
     if (build && (cc==NULL || *cc=='\0')) return "build requires --cc PATH or TF_CC";
@@ -156,7 +156,7 @@ const char *tf_driver_native(const TfVerifiedCore *core, const TfResolution *res
     char *path=NULL;
     FILE *out=stage(options->output,&path);
     if (out==NULL) return "cannot create a temporary C17 file beside the output";
-    const TfStatus status=tf_c_emit(out,core);
+    const TfStatus status=tf_c_emit_optimized(out,core,options->optimization);
     const bool closed=fclose(out)==0;
     const char *failure=NULL;
     bool moved=false;

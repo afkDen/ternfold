@@ -178,6 +178,7 @@ int main(int argc, char **argv) {
     const TfDiagnosticBag *shown;
     bool ast_mode, check_mode, plan_mode, core_mode, run_mode, emit_mode, build_mode, native_mode;
     TfDriverNativeOptions native={0};
+    bool optimization_seen=false;
     TfTokenDumpFormat dump_format = TF_TOKEN_DUMP_TEXT;
     TfDiagnosticFormat diagnostic_format = TF_DIAG_TEXT;
     const char *directory = NULL, *root = NULL, *input = NULL, *failure = NULL, *trace_path = NULL;
@@ -197,9 +198,9 @@ int main(int argc, char **argv) {
                   "       ternfold plan source.tfd [--root DIR] [--json] [--diagnostics-json]\n"
                   "       ternfold core source.tfd [--root DIR] [--diagnostics-json]\n"
                   "       ternfold run source.tfd [--root DIR] [--stdin-file FILE] [--diagnostics-json]\n"
-                  "       ternfold emit-c source.tfd [-o FILE] [--root DIR] [--diagnostics-json]\n"
+                  "       ternfold emit-c source.tfd [-o FILE] [--opt 0|1] [--root DIR] [--diagnostics-json]\n"
                   "       ternfold build source.tfd -o EXE [--cc PATH] [--runtime-root DIR] [--sanitize]\n"
-                  "                                     [--root DIR] [--diagnostics-json]\n"
+                  "                                     [--opt 0|1] [--root DIR] [--diagnostics-json]\n"
                   "       ternfold repl [--root DIR]\n"
                   "       ternfold run source.tfd [--trace NEW_FILE] (also writes NEW_FILE.origins)\n"
                   "       ternfold replay TRACE_FILE\n"
@@ -277,6 +278,11 @@ int main(int argc, char **argv) {
         else if (build_mode && strcmp(argv[i],"--cc")==0 && native.compiler==NULL && has_value) native.compiler=argv[++i];
         else if (build_mode && strcmp(argv[i],"--runtime-root")==0 && native.runtime==NULL && has_value) native.runtime=argv[++i];
         else if (build_mode && strcmp(argv[i],"--sanitize")==0 && !native.sanitize) native.sanitize=true;
+        else if (native_mode && strcmp(argv[i],"--opt")==0 && !optimization_seen && has_value &&
+                 (strcmp(argv[i+1],"0")==0 || strcmp(argv[i+1],"1")==0)) {
+            native.optimization=strcmp(argv[++i],"1")==0 ? TF_CORE_OPT_LEVEL_1 : TF_CORE_OPT_LEVEL_0;
+            optimization_seen=true;
+        }
         else return driver_error("unknown, duplicate or incomplete option; use --help",2);
     }
     if (!extension(argv[2])) return driver_error("source file extension must be exactly .tfd",1);

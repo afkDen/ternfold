@@ -9,6 +9,7 @@ typedef struct {
     const char *compiler;
     const char *runtime;
     bool sanitize;
+    TfCoreOptLevel optimization;
 } TfDriverNativeOptions;
 
 /* Paths follow the CLI/SourceManager native path convention. A NULL output

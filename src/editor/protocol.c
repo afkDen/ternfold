@@ -2,6 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include "../internal.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #define MESSAGE_LIMIT 1048576u
 #define RESPONSE_LIMIT 2097152u
@@ -31,6 +36,10 @@ static void number(Writer *w, uint64_t value) {
     size_t n = 0;
     do { digits[n++] = (char)('0' + value % 10); value /= 10; } while (value != 0);
     while (n != 0) put(w, &digits[--n], 1);
+}
+static void signed_number(Writer *w,int64_t value) {
+    if (value<0) { literal(w,"-"); number(w,(uint64_t)(-(value+1))+1u); }
+    else number(w,(uint64_t)value);
 }
 static void quote(Writer *w, const char *s, size_t n) {
     static const char hex[] = "0123456789abcdef";
@@ -196,12 +205,15 @@ static const Json *field(const Reader *r, const Json *o, const char *key) {
 static bool integer(const Json *j, int64_t *out) {
     uint64_t n = 0;
     if (j == NULL || j->kind != 'n' || j->length == 0) return false;
-    for (size_t i = 0; i < j->length; ++i) {
+    const bool negative=j->text[0]=='-';
+    const uint64_t limit=(uint64_t)INT64_MAX+(negative ? 1u : 0u);
+    if (negative && j->length==1) return false;
+    for (size_t i = negative ? 1u : 0u; i < j->length; ++i) {
         unsigned char c = (unsigned char)j->text[i];
-        if (c < '0' || c > '9' || n > ((uint64_t)INT64_MAX - (uint64_t)(c - '0')) / 10) return false;
+        if (c < '0' || c > '9' || n > (limit - (uint64_t)(c - '0')) / 10) return false;
         n = n * 10 + (uint64_t)(c - '0');
     }
-    *out = (int64_t)n;
+    *out = negative ? (n==(uint64_t)INT64_MAX+1u ? INT64_MIN : -(int64_t)n) : (int64_t)n;
     return true;
 }
 static bool valid_id(const Json *id) {
@@ -209,9 +221,7 @@ static bool valid_id(const Json *id) {
     if (id == NULL || id->length > 1024) return false;
     if (id->kind == 's') return true;
     if (id->kind != 'n') return false;
-    Json positive = *id;
-    if (positive.length != 0 && positive.text[0] == '-') { ++positive.text; --positive.length; }
-    return integer(&positive, &unused);
+    return integer(id, &unused);
 }
 static void id_write(Writer *w, const Json *id) {
     if (id == NULL) literal(w, "null");
@@ -237,28 +247,58 @@ static void position_write(Writer *w, TfEditorPosition p) {
 static void range_write(Writer *w, TfEditorRange r) {
     literal(w, "{\"start\":"); position_write(w, r.start); literal(w, ",\"end\":"); position_write(w, r.end); literal(w, "}");
 }
-static bool diagnostics(FILE *out, Writer *w, const char *uri, size_t uri_length,
-                        const TfEditorSnapshot *snapshot, int64_t version) {
-    const TfDiagnosticBag *bag = tf_editor_diagnostics(snapshot, version);
-    const TfSource *source = tf_editor_source(snapshot);
-    if (snapshot != NULL && bag == NULL) return true;
+static const TfSource *primary_source(const TfDiagnosticRecord *d,const TfSource *fallback) {
+    for (size_t i=0;i<d->label_count;++i)
+        if (d->labels[i].primary) return d->labels[i].span.source;
+    return d->label_count ? d->labels[0].span.source : fallback;
+}
+static void source_uri(Writer *w,const TfSource *source) {
+    const unsigned char *path=(const unsigned char *)source->name;
+#ifdef _WIN32
+    wchar_t wide[4097]; char utf8[16385];
+    if (!MultiByteToWideChar(CP_ACP,MB_ERR_INVALID_CHARS,source->name,-1,wide,4097) ||
+        !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide,-1,utf8,16385,NULL,NULL)) {
+        w->failed=true; return;
+    }
+    path=(const unsigned char *)utf8;
+#endif
+    literal(w,"\"file://");
+    if (*path!='/') literal(w,"/");
+    static const char hex[]="0123456789ABCDEF";
+    for (;*path;++path) {
+        unsigned char c=*path;
+#ifdef _WIN32
+        if (c=='\\') c='/';
+#endif
+        if ((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') ||
+            c=='/' || c==':' || c=='-' || c=='.' || c=='_' || c=='~') put(w,(const char *)&c,1);
+        else { const char escaped[]={'%',hex[c>>4],hex[c&15u]}; put(w,escaped,3); }
+    }
+    literal(w,"\"");
+}
+static bool diagnostics_target(FILE *out,Writer *w,const char *uri,size_t uri_length,
+    const TfDiagnosticBag *bag,const TfSource *root,const TfSource *target,
+    bool has_version,int64_t version,bool clear) {
     w->length = 0; w->failed = false;
     literal(w, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
-    quote(w, uri, uri_length);
-    if (snapshot != NULL) { literal(w, ",\"version\":"); number(w, (uint64_t)version); }
+    if (target==root) quote(w,uri,uri_length);
+    else source_uri(w,target);
+    if (has_version) { literal(w, ",\"version\":"); signed_number(w,version); }
     literal(w, ",\"diagnostics\":[");
-    for (size_t i = 0; i < tf_diagnostic_bag_count(bag); ++i) {
+    size_t emitted=0;
+    for (size_t i = 0; !clear && i < tf_diagnostic_bag_count(bag); ++i) {
         const TfDiagnosticRecord *d = tf_diagnostic_bag_get(bag, i);
+        if (primary_source(d,root)!=target) continue;
         TfEditorRange range = {{0, 0}, {0, 0}};
         for (size_t j = 0; j < d->label_count; ++j) {
             TfSpan s = d->labels[j].span;
-            if (d->labels[j].primary && s.source == source && source->valid) {
-                if (!tf_editor_position(source, s.start, &range.start) ||
-                    !tf_editor_position(source, s.end, &range.end)) range = (TfEditorRange){{0, 0}, {0, 0}};
+            if (d->labels[j].primary && s.source == target && target->valid) {
+                if (!tf_editor_position(target, s.start, &range.start) ||
+                    !tf_editor_position(target, s.end, &range.end)) range = (TfEditorRange){{0, 0}, {0, 0}};
                 break;
             }
         }
-        if (i != 0) literal(w, ",");
+        if (emitted++) literal(w, ",");
         literal(w, "{\"range\":"); range_write(w, range);
         literal(w, ",\"severity\":"); number(w, d->severity == TF_DIAG_ERROR ? 1u : d->severity == TF_DIAG_WARNING ? 2u : 3u);
         literal(w, ",\"code\":"); quote(w, d->code, 4);
@@ -267,30 +307,58 @@ static bool diagnostics(FILE *out, Writer *w, const char *uri, size_t uri_length
     literal(w, "]}}");
     return send(out, w);
 }
-static void type_write(Writer *w, const TfTypeStore *store, TfConcreteTypeId id, size_t depth) {
+static bool dependencies(FILE *out,Writer *w,const char *uri,size_t length,
+                         const TfEditorSnapshot *snapshot,int64_t version,bool clear) {
+    const TfDiagnosticBag *bag=tf_editor_diagnostics(snapshot,version);
+    const TfSource *root=tf_editor_source(snapshot);
+    for (size_t i=0;i<tf_diagnostic_bag_count(bag);++i) {
+        const TfSource *source=primary_source(tf_diagnostic_bag_get(bag,i),root);
+        if (source==root || !source) continue;
+        bool previous=false;
+        for (size_t j=0;j<i;++j)
+            if (primary_source(tf_diagnostic_bag_get(bag,j),root)==source) { previous=true; break; }
+        if (!previous && !diagnostics_target(out,w,uri,length,bag,root,source,false,0,clear)) return false;
+    }
+    return true;
+}
+static bool diagnostics(FILE *out,Writer *w,const char *uri,size_t length,
+                         const TfEditorSnapshot *snapshot,int64_t version) {
+    const TfDiagnosticBag *bag=tf_editor_diagnostics(snapshot,version);
+    const TfSource *root=tf_editor_source(snapshot);
+    if (snapshot && !bag) return true;
+    return diagnostics_target(out,w,uri,length,bag,root,root,snapshot!=NULL,version,false) &&
+           dependencies(out,w,uri,length,snapshot,version,false);
+}
+static void type_write(Writer *w, const TfTypeStore *store, TfConcreteTypeId id, size_t depth,size_t *work) {
     static const char *const names[] = {"Int", "Float", "Bool", "Text", "Char", "Unit"};
+    if (!*work) { literal(w,"..."); return; }
+    --*work;
+    if (depth>32) { literal(w,"..."); return; }
     const TfConcreteType *t = tf_type_store_get(store, id);
-    if (t == NULL || depth > 32) { w->failed = true; return; }
+    if (t == NULL) { literal(w,"<unavailable>"); return; }
     if (t->kind <= TF_CONCRETE_UNIT) { literal(w, names[(size_t)t->kind]); return; }
     switch (t->kind) {
         case TF_CONCRETE_LIST: case TF_CONCRETE_OPTION:
             literal(w, t->kind == TF_CONCRETE_LIST ? "List[" : "Option[");
-            type_write(w, store, t->as.element, depth + 1); literal(w, "]"); break;
+            type_write(w, store, t->as.element, depth + 1,work); literal(w, "]"); break;
         case TF_CONCRETE_DECISION:
-            literal(w, "Decision["); type_write(w, store, t->as.decision.machine, depth + 1);
-            literal(w, ", "); type_write(w, store, t->as.decision.output, depth + 1);
-            literal(w, ", "); type_write(w, store, t->as.decision.rejection, depth + 1); literal(w, "]"); break;
+            literal(w, "Decision["); type_write(w, store, t->as.decision.machine, depth + 1,work);
+            literal(w, ", "); type_write(w, store, t->as.decision.output, depth + 1,work);
+            literal(w, ", "); type_write(w, store, t->as.decision.rejection, depth + 1,work); literal(w, "]"); break;
         case TF_CONCRETE_FUNCTION:
             literal(w, "fn(");
             for (size_t i = 0; i < t->as.function.arity; ++i) {
                 if (i != 0) literal(w, ", ");
-                type_write(w, store, t->as.function.parameters[i], depth + 1);
+                if (!*work) { literal(w,"..."); break; }
+                type_write(w, store, t->as.function.parameters[i], depth + 1,work);
             }
-            literal(w, ") -> "); type_write(w, store, t->as.function.result, depth + 1); break;
+            literal(w, ") -> "); type_write(w, store, t->as.function.result, depth + 1,work); break;
         case TF_CONCRETE_RECORD: case TF_CONCRETE_ENUM: case TF_CONCRETE_MACHINE: {
             const TfResolvedType *nominal = tf_resolution_type(t->as.nominal.owner, t->as.nominal);
             if (nominal == NULL) { w->failed = true; return; }
-            put(w, (const char *)nominal->name.data, nominal->name.length); break;
+            put(w, (const char *)nominal->name.data, nominal->name.length>128 ? 128 : nominal->name.length);
+            if (nominal->name.length>128) literal(w,"...");
+            break;
         }
         default: w->failed = true; break;
     }
@@ -346,7 +414,8 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
     size_t uri_length = 0;
     int64_t version = -1;
     bool initialized = false, shutdown = false;
-    char cancelled[1024]; size_t cancelled_length = 0; char cancelled_kind = 0;
+    struct { char bytes[1024]; size_t length; char kind; } cancelled[32];
+    size_t cancellation_count=0;
     TfStatus status = TF_HOST_ERROR;
     if (allocator != NULL) a = *allocator;
     if (input == NULL || output == NULL || input == output || a.allocate == NULL || a.deallocate == NULL) return TF_HOST_ERROR;
@@ -361,12 +430,13 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
         if (f == 0) { status = TF_OK; break; }
         if (f < 0 || fread(body, 1, length, input) != length) break;
         Reader r = {0};
-        TfSource validation = {0};
-        TfStatus valid = tf_source_init(&validation, "<json-rpc>", body, length, &a);
-        tf_source_destroy(&validation);
-        if (valid == TF_HOST_ERROR) break;
+        bool valid=true;
+        for (size_t at=0,next;at<length;at=next) {
+            uint32_t scalar;
+            if (!tf_decode(body,length,at,&scalar,&next)) { valid=false; break; }
+        }
         r.bytes = body; r.length = length; r.decoded = decoded;
-        if (valid != TF_OK || !value(&r, 0)) {
+        if (!valid || !value(&r, 0)) {
             if (!error(output, &w, NULL, "-32700", "Parse error")) break;
             continue;
         }
@@ -403,8 +473,16 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
         if (equals(method, "$/cancelRequest")) {
             const Json *target = field(&r, params, "id");
             if (valid_id(target)) {
-                memcpy(cancelled, target->text, target->length);
-                cancelled_length = target->length; cancelled_kind = target->kind;
+                size_t found=0;
+                while (found<cancellation_count &&
+                       (cancelled[found].kind!=target->kind || cancelled[found].length!=target->length ||
+                        memcmp(cancelled[found].bytes,target->text,target->length)!=0)) ++found;
+                if (found==cancellation_count) {
+                    if (cancellation_count==32) break;
+                    ++cancellation_count;
+                    memcpy(cancelled[found].bytes,target->text,target->length);
+                    cancelled[found].length=target->length; cancelled[found].kind=target->kind;
+                }
             }
             continue;
         }
@@ -418,10 +496,17 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
             const Json *text = field(&r, doc, "text");
             if (!opening) {
                 const Json *changes = field(&r, params, "contentChanges");
-                if (!same || changes == NULL || changes->kind != 'a' || changes->count != 1) continue;
-                const Json *change = changes + 1;
-                if (field(&r, change, "range") != NULL || field(&r, change, "rangeLength") != NULL) continue;
-                text = field(&r, change, "text");
+                if (!same || changes == NULL || changes->kind != 'a' || changes->count==0) continue;
+                bool accepted=true;
+                for (size_t index=(size_t)(changes-r.tokens)+1;index<changes->next;index=r.tokens[index].next) {
+                    const Json *change=&r.tokens[index];
+                    const Json *next=field(&r,change,"text");
+                    if (field(&r,change,"range") || field(&r,change,"rangeLength") || !next || next->kind!='s') {
+                        accepted=false; break;
+                    }
+                    text=next;
+                }
+                if (!accepted) continue;
             }
             if ((opening && uri != NULL) || doc_uri == NULL || doc_uri->kind != 's' ||
                 doc_uri->length == 0 || doc_uri->length > 4096 || memchr(doc_uri->text, 0, doc_uri->length) != NULL ||
@@ -434,6 +519,9 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
             if (tf_editor_snapshot_create(&next, new_uri, text->text, text->length, new_version, root, &a) != TF_OK) {
                 a.deallocate(a.context, new_uri); break;
             }
+            if (!dependencies(output,&w,uri,uri_length,snapshot,version,true)) {
+                tf_editor_snapshot_destroy(next); a.deallocate(a.context,new_uri); break;
+            }
             tf_editor_snapshot_destroy(snapshot);
             if (uri != NULL) a.deallocate(a.context, uri);
             snapshot = next; uri = new_uri; uri_length = doc_uri->length; version = new_version;
@@ -442,6 +530,7 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
         }
         if (equals(method, "textDocument/didClose")) {
             if (same) {
+                if (!dependencies(output,&w,uri,uri_length,snapshot,version,true)) break;
                 if (!diagnostics(output, &w, uri, uri_length, NULL, 0)) break;
                 tf_editor_snapshot_destroy(snapshot); snapshot = NULL;
                 a.deallocate(a.context, uri); uri = NULL; uri_length = 0; version = -1;
@@ -449,16 +538,20 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
             continue;
         }
         if (equals(method, "textDocument/hover") && id != NULL) {
-            if (id->kind == cancelled_kind && id->length == cancelled_length &&
-                memcmp(id->text, cancelled, id->length) == 0) {
-                cancelled_kind = 0;
+            size_t cancelled_index=0;
+            while (cancelled_index<cancellation_count &&
+                   (cancelled[cancelled_index].kind!=id->kind || cancelled[cancelled_index].length!=id->length ||
+                    memcmp(cancelled[cancelled_index].bytes,id->text,id->length)!=0)) ++cancelled_index;
+            if (cancelled_index<cancellation_count) {
+                --cancellation_count;
+                if (cancelled_index!=cancellation_count) cancelled[cancelled_index]=cancelled[cancellation_count];
                 if (!error(output, &w, id, "-32800", "Request cancelled")) break;
                 continue;
             }
             int64_t line, character;
             const Json *p = field(&r, params, "position");
             if (!same || !integer(field(&r, p, "line"), &line) || !integer(field(&r, p, "character"), &character) ||
-                (uint64_t)line > SIZE_MAX || (uint64_t)character > SIZE_MAX) {
+                line<0 || character<0 || (uint64_t)line > SIZE_MAX || (uint64_t)character > SIZE_MAX) {
                 if (!error(output, &w, id, "-32602", "Invalid hover parameters")) break;
                 continue;
             }
@@ -470,7 +563,8 @@ TfStatus tf_editor_serve(FILE *input, FILE *output, const char *root, const TfAl
                 /* Type names are ASCII identifiers/punctuation from compiler
                  * records, hence safe inside a JSON string. */
                 literal(&w, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"");
-                type_write(&w, tf_editor_types(snapshot), type, 0);
+                size_t type_work=128;
+                type_write(&w, tf_editor_types(snapshot), type, 0,&type_work);
                 literal(&w, "\"},\"range\":"); range_write(&w, range); literal(&w, "}}");
             }
             if (!send(output, &w)) break;

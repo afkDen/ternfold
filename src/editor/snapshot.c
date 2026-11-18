@@ -5,8 +5,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum { EDITOR_SOURCE_BYTES=1024*1024, EDITOR_HEAP_BYTES=32*1024*1024 };
+typedef union BudgetHeader BudgetHeader;
+union BudgetHeader { max_align_t alignment; size_t size; };
+typedef struct { TfAllocator upstream; size_t live, limit; } Budget;
+static void *budget_allocate(void *context,size_t bytes) {
+    Budget *b=context;
+    if (bytes>SIZE_MAX-sizeof(BudgetHeader)) return NULL;
+    const size_t total=sizeof(BudgetHeader)+bytes;
+    if (total>b->limit-b->live) return NULL;
+    BudgetHeader *h=b->upstream.allocate(b->upstream.context,total);
+    if (!h) return NULL;
+    h->size=total; b->live+=total;
+    return h+1;
+}
+static void budget_free(void *context,void *pointer) {
+    if (!pointer) return;
+    Budget *b=context; BudgetHeader *h=(BudgetHeader *)pointer-1;
+    b->live-=h->size;
+    b->upstream.deallocate(b->upstream.context,h);
+}
+
 struct TfEditorSnapshot {
     TfAllocator allocator;
+    Budget budget;
     TfSource source;
     int64_t version;
     bool cancelled;
@@ -70,11 +92,13 @@ TfStatus tf_editor_snapshot_create(TfEditorSnapshot **out, const char *name,
     *out = NULL;
     if (allocator != NULL) a = *allocator;
     if (a.allocate == NULL || a.deallocate == NULL || name == NULL ||
-        (bytes == NULL && length != 0) || version < 0 || length > 1048576) return TF_HOST_ERROR;
+        (bytes == NULL && length != 0) || length > EDITOR_SOURCE_BYTES) return TF_HOST_ERROR;
     s = a.allocate(a.context, sizeof *s);
     if (s == NULL) return TF_HOST_ERROR;
     memset(s, 0, sizeof *s);
     s->allocator = a;
+    s->budget=(Budget){a,0,EDITOR_HEAP_BYTES-sizeof *s};
+    a=(TfAllocator){&s->budget,budget_allocate,budget_free};
     s->version = version;
     status = tf_source_init(&s->source, name, bytes, length, &a);
     if (status == TF_HOST_ERROR) goto fail;
@@ -87,6 +111,12 @@ TfStatus tf_editor_snapshot_create(TfEditorSnapshot **out, const char *name,
     }
     if (tf_source_manager_create(&s->manager, &a) != TF_OK ||
         tf_resolve_virtual(&s->resolution, s->manager, &s->source, NULL, &options, &a) != TF_OK) goto fail;
+    size_t source_bytes=length;
+    for (size_t i=0;i<tf_source_manager_count(s->manager);++i) {
+        const TfManagedSource *entry=tf_source_manager_lookup(s->manager,(TfSourceId){s->manager,i+1});
+        if (!entry || entry->source->length>EDITOR_SOURCE_BYTES-source_bytes) goto fail;
+        source_bytes+=entry->source->length;
+    }
     s->diagnostics = tf_resolution_diagnostics(s->resolution);
     if (tf_diagnostic_bag_has_errors(s->diagnostics)) goto success;
     if (tf_signatures_build(&s->signatures, s->resolution, 100, &a) != TF_OK) goto fail;
