@@ -52,7 +52,8 @@ try {
             'runtime','scripts','src','stdlib','tests','tools')
         if (($path -notmatch '/' -and $path -cnotin $roots) -or
             ($path -match '/' -and ($path -split '/',2)[0] -cnotin $directories) -or
-            ($path -match '/' -and ($path -replace '^\.github/','') -match '(^|/)\.') -or
+            ($path -match '/' -and
+             (($path -replace '^\.github/','') -replace '(^|/)\.gitignore$','$1ignore') -match '(^|/)\.') -or
             $path -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
             $path -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$') { throw "Unexpected historical path: $path" }
     }
