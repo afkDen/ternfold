@@ -5,6 +5,9 @@ the programs whose behavior changes and update the specification with the
 implementation. For a bug, include a short reproducer and the expected
 output or diagnostic. Keep checked-in fixtures small.
 
+Documentation filenames use lowercase words and hyphens. Standard project
+files such as `README.md` keep their conventional names.
+
 ```powershell
 $cc = 'C:/toolchain/bin/clang.exe'
 ./scripts/build.ps1 check -Compiler $cc

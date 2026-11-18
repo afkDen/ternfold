@@ -54,6 +54,9 @@ try {
             ($path -match '/' -and ($path -split '/',2)[0] -cnotin $directories) -or
             ($path -match '/' -and
              (($path -replace '^\.github/','') -replace '(^|/)\.gitignore$','$1ignore') -match '(^|/)\.') -or
+            ($path -match '/[^/]+\.md$' -and
+             ([IO.Path]::GetFileName($path)) -cnotin @('README.md','PULL_REQUEST_TEMPLATE.md') -and
+             ([IO.Path]::GetFileName($path)) -cmatch '[A-Z_]') -or
             $path -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
             $path -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$') { throw "Unexpected historical path: $path" }
     }
