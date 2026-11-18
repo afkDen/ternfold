@@ -117,6 +117,26 @@ int main(void) {
         "match true\n"
         "{ true => { 1 }, false => { 0 } }\n",
         "1\n[2, 3]\n1\n",NULL,0);
+    static const char *const bad_header[]={"error[E110]","42"};
+    exercise(
+        "fn broken() -> 42\n"
+        "fn good() -> Int { 7 }\n"
+        "good()\n",
+        "defined\n7\n",bad_header,sizeof bad_header/sizeof *bad_header);
+    exercise(
+        "let held = 8;\n"
+        "let abandoned = 1\n"
+        " :cancel \r\n"
+        "held\n"
+        "let again = 2\n"
+        " :quit\n"
+        ";\n"
+        "77\n",
+        "8\ncancelled\n8\n",NULL,0);
+    exercise(
+        ":load tests/fixtures/repl/nominal-root.tfd\n"
+        ":type fn(l: first::R, r: second::R) -> first::R { l }\n",
+        "loaded\nfn(\"first.tfd\"::R, \"second.tfd\"::R) -> \"first.tfd\"::R\n",NULL,0);
     printf("Transactional REPL: %zu transcript assertions passed\n",assertions);
     return 0;
 }

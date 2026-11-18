@@ -72,6 +72,8 @@ int main(void) {
         {"pub\n", TF_REPL_UNIT_INCOMPLETE},
         {"pub 1", TF_REPL_UNIT_DECLARATION},
         {"fn f() -> Int\n", TF_REPL_UNIT_INCOMPLETE},
+        {"fn broken() -> 42\n", TF_REPL_UNIT_DECLARATION},
+        {"let broken ]\n", TF_REPL_UNIT_BINDING},
         {"fn() -> Int", TF_REPL_UNIT_INCOMPLETE},
         {"fn f() -> Int {\n", TF_REPL_UNIT_INCOMPLETE},
         {"record R", TF_REPL_UNIT_INCOMPLETE},
