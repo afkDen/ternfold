@@ -450,7 +450,7 @@ int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
             if (pending.length!=0 && !message(err,"repl: incomplete unit at end of input\n")) goto done;
             status=0; break;
         }
-        if (next==2 || line.length>TURN_BYTES-pending.length) {
+        if (next==2) {
             pending.length=0; scanned=0;
             if (!message(err,"repl: unit exceeds 64 KiB\n")) goto done;
             continue;
@@ -459,6 +459,11 @@ int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
         if (pending.length!=0 && line_command(&line,":cancel")) {
             pending.length=0; scanned=0;
             if (!message(out,"cancelled\n")) goto done;
+            continue;
+        }
+        if (line.length>TURN_BYTES-pending.length) {
+            pending.length=0; scanned=0;
+            if (!message(err,"repl: unit exceeds 64 KiB\n")) goto done;
             continue;
         }
         if (pending.length==0) {
