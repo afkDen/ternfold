@@ -248,6 +248,7 @@ tf_status tf_value_equal(tf_context *ctx, tf_span_id span,
     size_t remaining = TF_VALUE_OPS_WORK_LIMIT;
     tf_type_id type = matching(ctx, span, left, right);
     if (type == 0) return TF_FAULT;
+    if (entry(ctx,type)->kind==TF_RT_TYPE_FUNCTION) return tf_context_fail(ctx,TF_R004,span);
     if (left.tag != TF_VALUE_BOXED) {
         *out = tf_bool(inline_equal(left, right));
         return TF_OK;
