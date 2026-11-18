@@ -5,7 +5,7 @@
 #include "ternfold/machine_plan.h"
 
 /* Lowering scratch tables, borrowing a valid machine program. Source concrete
- * IDs keep their one-based ordinal. Synthesized List and Tag types append.
+ * IDs keep their one-based ordinal. Synthesized List, Decision and Tag types append.
  * No semantic handle borrows this owner after tf_core_program_copy. */
 typedef struct TfCoreLowerTypes TfCoreLowerTypes;
 TfStatus tf_core_lower_types_create(TfCoreLowerTypes **out, const TfMachineProgram *program,
@@ -13,6 +13,13 @@ TfStatus tf_core_lower_types_create(TfCoreLowerTypes **out, const TfMachineProgr
 void tf_core_lower_types_destroy(TfCoreLowerTypes *types);
 const TfTypedProgram *tf_core_lower_types_program(const TfCoreLowerTypes *types);
 TfCoreTypeId tf_core_lower_type_id(const TfCoreLowerTypes *types, TfConcreteTypeId type);
+/* For generated functions, resolve a plan's typed constructor result to the
+ * Core snapshot ID. For an already known concrete machine ID use
+ * tf_core_lower_type_id directly. Returns 0 for a missing or mismatched plan. */
+TfCoreTypeId tf_core_lower_machine_id(const TfCoreLowerTypes *types, const TfMachinePlan *plan);
+/* Reuse the source Decision or append the machine's unique Decision and, if
+ * needed, List[output]. On failure clears *out and adds no type entries. */
+TfStatus tf_core_lower_decision(TfCoreLowerTypes *types, TfCoreTypeId machine, TfCoreTypeId *out);
 TfStatus tf_core_lower_list(TfCoreLowerTypes *types, TfCoreTypeId element, TfCoreTypeId *out);
 TfStatus tf_core_lower_tag(TfCoreLowerTypes *types, TfCoreTypeId tagged, TfCoreTypeId *out);
 /* Borrow validated display metadata or omit an invalid native path. Names

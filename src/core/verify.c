@@ -16,7 +16,6 @@ typedef struct {
     TfCoreVerifyIssue at;
     bool resource_failure;
     unsigned char *type_flags;
-    size_t max_tags;
 } Verify;
 
 enum { VISITING = 1, COMPLETE = 2, DATA = 4, EQUALITY = 8 };
@@ -279,95 +278,105 @@ static bool type_graph(Verify *v, TypeFrame *stack) {
     return true;
 }
 
-/* Structural constructors must be interned. Nominal identity is the table
- * ID, never a display name or an accidentally identical layout. */
-static bool same_structure(const TfCoreType *a, const TfCoreType *b) {
-    if (a->kind != b->kind) return false;
-    switch (a->kind) {
-    case TF_CORE_TYPE_INT: case TF_CORE_TYPE_FLOAT: case TF_CORE_TYPE_BOOL:
-    case TF_CORE_TYPE_TEXT: case TF_CORE_TYPE_CHAR: case TF_CORE_TYPE_UNIT:
-        return true;
-    case TF_CORE_TYPE_LIST: case TF_CORE_TYPE_OPTION:
-        return a->as.element == b->as.element;
-    case TF_CORE_TYPE_TAG: return a->as.tagged == b->as.tagged;
-    case TF_CORE_TYPE_DECISION:
-        return a->as.decision.machine == b->as.decision.machine &&
-               a->as.decision.output == b->as.decision.output &&
-               a->as.decision.rejection == b->as.decision.rejection;
-    case TF_CORE_TYPE_FUNCTION:
-        if (a->as.function.result != b->as.function.result ||
-            a->as.function.parameters.count != b->as.function.parameters.count) return false;
-        for (size_t i = 0; i < a->as.function.parameters.count; ++i)
-            if (a->as.function.parameters.items[i] != b->as.function.parameters.items[i])
-                return false;
-        return true;
-    default: return false;
+typedef struct {
+    size_t first, second;
+    size_t exclusions;
+    const TfCoreOperation *marked_by;
+} Row;
+
+typedef int (*CompareRows)(const Verify *, const Row *, const Row *);
+
+static int order(size_t a, size_t b) {
+    return (a > b) - (a < b);
+}
+
+/* Bottom-up merges give a worst-case bound even for adversarial keys. The
+ * function signature comparator compares arity before examining parameters,
+ * so a long comparison can be charged to either row emitted by the merge. */
+static bool sort_rows(Verify *v, Row *rows, size_t count, CompareRows compare) {
+    Row *scratch, *from = rows, *to;
+    if (count < 2) return true;
+    scratch = workspace(v, count, sizeof(*scratch));
+    if (scratch == NULL) return false;
+    to = scratch;
+    for (size_t width = 1; width < count;) {
+        size_t start = 0;
+        while (start < count) {
+            const size_t middle = count - start < width ? count : start + width;
+            const size_t end = count - middle < width ? count : middle + width;
+            size_t left = start, right = middle;
+            for (size_t i = start; i < end; ++i) {
+                if (right == end || (left < middle && compare(v, &from[left], &from[right]) <= 0))
+                    to[i] = from[left++];
+                else
+                    to[i] = from[right++];
+            }
+            start = end;
+        }
+        Row *swap = from;
+        from = to;
+        to = swap;
+        if (width > count / 2) break;
+        width *= 2;
     }
+    if (from != rows) memcpy(rows, from, count * sizeof(*rows));
+    release(v, scratch);
+    return true;
 }
 
-static size_t mix_type(size_t hash, size_t word) {
-    return (size_t)(((uintmax_t)hash ^ (uintmax_t)word) * UINTMAX_C(16777619));
+static bool nominal(TfCoreTypeKind k) {
+    return k == TF_CORE_TYPE_RECORD || k == TF_CORE_TYPE_ENUM || k == TF_CORE_TYPE_MACHINE;
 }
 
-/* Zero marks nominal types, whose IDs intentionally distinguish them. A
- * collision is always resolved by comparing the full structural key. */
-static size_t structural_hash(const TfCoreType *t) {
-    size_t h = mix_type(0, (size_t)t->kind);
-    switch (t->kind) {
+static int compare_types(const Verify *v, const Row *left, const Row *right) {
+    const TfCoreType *a = type(v, left->first), *b = type(v, right->first);
+    int cmp = order((size_t)a->kind, (size_t)b->kind);
+    if (cmp != 0) return cmp;
+    switch (a->kind) {
     case TF_CORE_TYPE_LIST: case TF_CORE_TYPE_OPTION:
-        h = mix_type(h, t->as.element);
-        break;
-    case TF_CORE_TYPE_TAG:
-        h = mix_type(h, t->as.tagged);
-        break;
+        return order(a->as.element, b->as.element);
+    case TF_CORE_TYPE_TAG: return order(a->as.tagged, b->as.tagged);
     case TF_CORE_TYPE_DECISION:
-        h = mix_type(h, t->as.decision.machine);
-        h = mix_type(h, t->as.decision.output);
-        h = mix_type(h, t->as.decision.rejection);
-        break;
+        /* Checked layout already fixes output/rejection/emissions for M. */
+        return order(a->as.decision.machine, b->as.decision.machine);
     case TF_CORE_TYPE_FUNCTION:
-        h = mix_type(h, t->as.function.result);
-        for (size_t i = 0; i < t->as.function.parameters.count; ++i)
-            h = mix_type(h, t->as.function.parameters.items[i]);
-        break;
-    case TF_CORE_TYPE_RECORD: case TF_CORE_TYPE_ENUM: case TF_CORE_TYPE_MACHINE:
+        cmp = order(a->as.function.parameters.count, b->as.function.parameters.count);
+        if (cmp != 0) return cmp;
+        cmp = order(a->as.function.result, b->as.function.result);
+        if (cmp != 0) return cmp;
+        for (size_t i = 0; i < a->as.function.parameters.count; ++i) {
+            cmp = order(a->as.function.parameters.items[i], b->as.function.parameters.items[i]);
+            if (cmp != 0) return cmp;
+        }
         return 0;
     default:
-        break;
+        return 0;
     }
-    return h == 0 ? 1 : h;
 }
 
+/* Nominal IDs are distinct even if all their display data matches. */
 static bool canonical_types(Verify *v) {
     const size_t count = v->data->type_count;
-    TfCoreTypeId *ids;
-    size_t capacity;
-    bool ok = true;
-    if (count > SIZE_MAX / 2) {
-        v->resource_failure = true;
-        return false;
-    }
-    capacity = count * 2;
-    ids = workspace(v, capacity, sizeof(*ids));
-    if (ids == NULL) return false;
-    memset(ids, 0, capacity * sizeof(*ids));
+    size_t n = 0;
+    TfCoreTypeId duplicate = 0;
+    Row *rows = workspace(v, count, sizeof(*rows));
+    bool ok;
+    if (rows == NULL) return false;
     for (size_t i = 0; i < count; ++i) {
-        const TfCoreType *t = &v->data->types[i];
-        const size_t hash = structural_hash(t);
-        size_t slot;
-        if (hash == 0) continue;
-        slot = hash % capacity;
-        while (ids[slot] != 0 && !same_structure(t, type(v, ids[slot]))) {
-            if (++slot == capacity) slot = 0;
-        }
-        if (ids[slot] != 0) {
-            v->at = (TfCoreVerifyIssue){.type = i + 1, .span = t->span};
-            ok = reject(v, TF_CORE_VERIFY_TYPE);
-            break;
-        }
-        ids[slot] = i + 1;
+        if (!nominal(v->data->types[i].kind)) rows[n++] = (Row){.first = i + 1};
     }
-    release(v, ids);
+    ok = sort_rows(v, rows, n, compare_types);
+    if (ok) {
+        for (size_t i = 1; i < n; ++i)
+            if ((duplicate == 0 || rows[i].first < duplicate) &&
+                compare_types(v, &rows[i - 1], &rows[i]) == 0)
+                duplicate = rows[i].first;
+    }
+    release(v, rows);
+    if (duplicate != 0) {
+        v->at = (TfCoreVerifyIssue){.type = duplicate, .span = type(v, duplicate)->span};
+        return reject(v, TF_CORE_VERIFY_TYPE);
+    }
     return ok;
 }
 
@@ -379,7 +388,6 @@ static bool verify_types(Verify *v) {
         const TfCoreType *t = &v->data->types[i];
         v->at = (TfCoreVerifyIssue){.type = i + 1};
         if (!type_shape(v, t)) return false;
-        if (tag_count(t) > v->max_tags) v->max_tags = tag_count(t);
     }
     if (count == 0) return true;
     if (!canonical_types(v)) return false;
@@ -498,18 +506,14 @@ static bool signatures(Verify *v) {
     return true;
 }
 
-typedef struct Fact Fact;
-struct Fact {
-    const Fact *prior;
-    const TfCoreTagCase *excluded;
-    size_t excluded_count, remaining;
-    size_t exact;
-    bool is_exact;
-};
+typedef struct {
+    size_t remaining, exact;
+    bool active, is_exact;
+} Fact;
 
 typedef struct {
     TfCoreTypeId type; /* retained after exit to enforce global uniqueness */
-    const Fact *fact;
+    Fact fact;
     bool visible;
 } Slot;
 
@@ -518,7 +522,8 @@ typedef struct {
     TfCoreTypeId result;
     size_t next_let, next_child, residual;
     TfCoreValueId element, subject;
-    Fact fact;
+    Fact prior;
+    const TfCoreOperation *excludes;
     bool started, impossible;
 } BlockFrame;
 
@@ -527,8 +532,10 @@ typedef struct {
     const TfCoreFunction *function;
     Slot *slots;
     BlockFrame *stack;
-    unsigned char *seen, *marks;
-    size_t depth, visited, defined;
+    unsigned char *seen;
+    Row *keys;
+    size_t key_count, depth, visited, input_index;
+    TfCoreValueId snapshot;
 } Body;
 
 static TfCoreTypeId visible(const Body *body, TfCoreValueId id) {
@@ -543,18 +550,35 @@ static bool define(Body *body, TfCoreValueId id, TfCoreTypeId type_id) {
     if (id == 0 || id > body->function->value_count || body->slots[id - 1].type != 0)
         return reject(v, TF_CORE_VERIFY_VALUE);
     body->slots[id - 1] = (Slot){.type = type_id, .visible = true};
-    ++body->defined;
     return true;
 }
 
-static bool allows(const Fact *fact, size_t tag) {
-    for (; fact != NULL; fact = fact->prior) {
-        if (fact->remaining == 0) return false;
-        if (fact->is_exact) return fact->exact == tag;
-        for (size_t i = 0; i < fact->excluded_count; ++i)
-            if (fact->excluded[i].tag == tag) return false;
+static int compare_keys(const Verify *v, const Row *a, const Row *b) {
+    const int cmp = order(a->first, b->first);
+    (void)v;
+    return cmp == 0 ? order(a->second, b->second) : cmp;
+}
+
+/* The immutable part of the index contains one key per distinct pair named
+ * by a switch case. A tag absent from this index was never excluded. */
+static Row *tag_key(const Body *b, TfCoreValueId id, size_t tag) {
+    const Row wanted = {.first = id, .second = tag};
+    size_t first = 0, end = b->key_count;
+    while (first < end) {
+        const size_t mid = first + (end - first) / 2;
+        const int cmp = compare_keys(NULL, &b->keys[mid], &wanted);
+        if (cmp == 0) return &b->keys[mid];
+        if (cmp < 0) first = mid + 1;
+        else end = mid;
     }
-    return true;
+    return NULL;
+}
+
+static bool allows(const Fact *fact, const Row *key, size_t tag) {
+    if (!fact->active) return true;
+    if (fact->remaining == 0) return false;
+    if (fact->is_exact) return fact->exact == tag;
+    return key == NULL || key->exclusions == 0;
 }
 
 static bool typed_args(const Body *b, TfCoreValueIds args, size_t skip, TfCoreTypeIds wanted) {
@@ -666,15 +690,17 @@ static bool builtin(const Body *body, const TfCoreOperation *op, TfCoreTypeId re
 static bool switch_shape(Body *b, BlockFrame *frame, const TfCoreOperation *op,
                          size_t count) {
     Verify *v = b->verify;
-    const Fact *prior = b->slots[op->operands.items[0] - 1].fact;
-    frame->residual = prior == NULL ? count : prior->remaining;
+    const TfCoreValueId id = op->operands.items[0];
+    const Fact *prior = &b->slots[id - 1].fact;
+    frame->residual = prior->active ? prior->remaining : count;
     if (op->as.switch_tag.case_count > count) return reject(v, TF_CORE_VERIFY_TAG_PROOF);
-    memset(b->marks, 0, count);
     for (size_t i = 0; i < op->as.switch_tag.case_count; ++i) {
         const size_t tag = op->as.switch_tag.cases[i].tag;
-        if (tag >= count || b->marks[tag] != 0) return reject(v, TF_CORE_VERIFY_TAG_PROOF);
-        b->marks[tag] = 1;
-        if (allows(prior, tag)) --frame->residual;
+        Row *key = tag_key(b, id, tag);
+        if (tag >= count || key == NULL || key->marked_by == op)
+            return reject(v, TF_CORE_VERIFY_TAG_PROOF);
+        key->marked_by = op;
+        if (allows(prior, key, tag)) --frame->residual;
     }
     return (frame->residual == 0 || op->as.switch_tag.default_block != 0) ||
            reject(v, TF_CORE_VERIFY_TAG_PROOF);
@@ -697,6 +723,8 @@ static bool operation(Body *b, BlockFrame *frame, const TfCoreLet *let) {
     for (size_t i = 0; i < args.count; ++i) {
         const TfCoreTypeId id = visible(b, args.items[i]);
         if (id == 0) return reject(v, TF_CORE_VERIFY_VALUE);
+        if (args.items[i] == b->snapshot && op->kind != TF_CORE_OP_INPUT_AT)
+            return reject(v, TF_CORE_VERIFY_ENTRY);
         if (i == 0) a = id;
         if (i == 1) c = id;
     }
@@ -756,8 +784,9 @@ static bool operation(Body *b, BlockFrame *frame, const TfCoreLet *let) {
         const Fact *proof;
         if (args.count != 1 || tag >= tag_count(subject) || index >= payload_count(subject, tag) ||
             let->type != payload_type(subject, tag, index)) break;
-        proof = b->slots[args.items[0] - 1].fact;
-        if (proof != NULL && proof->remaining == 1 && allows(proof, tag)) return true;
+        proof = &b->slots[args.items[0] - 1].fact;
+        if (proof->active && proof->remaining == 1 &&
+            allows(proof, tag_key(b, args.items[0], tag), tag)) return true;
         return reject(v, TF_CORE_VERIFY_TAG_PROOF);
     }
     case TF_CORE_OP_IF:
@@ -797,9 +826,13 @@ static bool operation(Body *b, BlockFrame *frame, const TfCoreLet *let) {
             return parameter(v, &op->as.list_map.element);
         break;
     case TF_CORE_OP_INPUT_AT:
-        if (b->function->kind == TF_CORE_FUNCTION_ENTRY_ONLY && frame->id == b->function->body &&
-            args.count == 1 && args.items[0] == b->function->parameters[0].value &&
-            r->kind == TF_CORE_TYPE_TEXT) return true;
+        if (b->snapshot != 0 && frame->id == b->function->body && args.count == 1 &&
+            args.items[0] == b->snapshot && r->kind == TF_CORE_TYPE_TEXT &&
+            op->as.input_index == b->input_index) {
+            /* Each increment corresponds to one counted root binding. */
+            ++b->input_index;
+            return true;
+        }
         return reject(v, TF_CORE_VERIFY_ENTRY);
     default:
         break;
@@ -813,6 +846,7 @@ typedef struct {
     const TfCoreParameter *element;
     TfCoreValueId subject;
     Fact fact;
+    const TfCoreOperation *excludes;
     bool impossible;
 } Child;
 
@@ -838,9 +872,7 @@ static bool child_block(const Body *b, const BlockFrame *parent, const TfCoreLet
             if (i != op->as.switch_tag.case_count || op->as.switch_tag.default_block == 0)
                 return false;
             child->block = op->as.switch_tag.default_block;
-            child->fact.excluded = op->as.switch_tag.cases;
-            child->fact.excluded_count = op->as.switch_tag.case_count;
-            child->fact.remaining = parent->residual;
+            child->excludes = op;
         }
         break;
     case TF_CORE_OP_LIST_MAP:
@@ -853,10 +885,32 @@ static bool child_block(const Body *b, const BlockFrame *parent, const TfCoreLet
         return false;
     }
     child->subject = op->operands.items[0];
-    child->fact.prior = b->slots[child->subject - 1].fact;
-    if (child->fact.is_exact)
-        child->fact.remaining = allows(child->fact.prior, child->fact.exact) ? 1u : 0u;
+    const Fact *prior = &b->slots[child->subject - 1].fact;
+    if (child->excludes != NULL) {
+        child->fact = *prior;
+        child->fact.remaining = parent->residual;
+    } else {
+        const Row *key = tag_key(b, child->subject, child->fact.exact);
+        child->fact.remaining = allows(prior, key, child->fact.exact) ? 1u : 0u;
+    }
+    child->fact.active = true;
     child->impossible = child->impossible || child->fact.remaining == 0;
+    return true;
+}
+
+/* Exclusions are scoped to defaults. Repeated exclusions of the same tag
+ * accumulate depth, so leaving a nested default restores the outer proof. */
+static bool adjust_exclusions(Body *b, const BlockFrame *frame, bool entering) {
+    if (frame->excludes == NULL) return true;
+    for (size_t i = 0; i < frame->excludes->as.switch_tag.case_count; ++i) {
+        const size_t tag = frame->excludes->as.switch_tag.cases[i].tag;
+        Row *key = tag_key(b, frame->subject, tag);
+        if (key == NULL || (!entering && key->exclusions == 0))
+            return reject(b->verify, TF_CORE_VERIFY_TAG_PROOF);
+        /* At most one exclusion per key per active block. */
+        if (entering) ++key->exclusions;
+        else --key->exclusions;
+    }
     return true;
 }
 
@@ -873,9 +927,13 @@ static bool enter(Body *b, const Child *child) {
     ++b->visited;
     frame = &b->stack[b->depth++];
     *frame = (BlockFrame){.id = child->block, .result = child->result,
-                         .subject = child->subject, .fact = child->fact,
+                         .subject = child->subject, .excludes = child->excludes,
                          .impossible = child->impossible};
-    if (frame->subject != 0) b->slots[frame->subject - 1].fact = &frame->fact;
+    if (frame->subject != 0) {
+        frame->prior = b->slots[frame->subject - 1].fact;
+        b->slots[frame->subject - 1].fact = child->fact;
+        if (!adjust_exclusions(b, frame, true)) return false;
+    }
     if (child->element != NULL) {
         frame->element = child->element->value;
         v->at.span = child->element->span; /* checked before entry */
@@ -891,6 +949,8 @@ static bool leave(Body *b, const BlockFrame *frame, const TfCoreBlock *block) {
     if (!span_id(v, term->span)) return false;
     switch (term->kind) {
     case TF_CORE_YIELD:
+        if (b->snapshot != 0 && term->value == b->snapshot)
+            return reject(v, TF_CORE_VERIFY_ENTRY);
         if (visible(b, term->value) != frame->result) return reject(v, TF_CORE_VERIFY_TERMINATOR);
         break;
     case TF_CORE_UNREACHABLE:
@@ -902,7 +962,10 @@ static bool leave(Body *b, const BlockFrame *frame, const TfCoreBlock *block) {
     for (size_t i = 0; i < block->let_count; ++i)
         b->slots[block->lets[i].value - 1].visible = false;
     if (frame->element != 0) b->slots[frame->element - 1].visible = false;
-    if (frame->subject != 0) b->slots[frame->subject - 1].fact = frame->fact.prior;
+    if (frame->subject != 0) {
+        if (!adjust_exclusions(b, frame, false)) return false;
+        b->slots[frame->subject - 1].fact = frame->prior;
+    }
     --b->depth;
     return true;
 }
@@ -950,21 +1013,76 @@ static bool walk_blocks(Body *b) {
                 return reject(v, TF_CORE_VERIFY_BLOCK);
             }
     }
-    if (b->defined != fn->value_count) {
-        for (size_t i = 0; i < fn->value_count; ++i)
-            if (b->slots[i].type == 0) {
-                v->at.block = 0;
-                v->at.value = i + 1;
-                v->at.span = fn->span;
-                return reject(v, TF_CORE_VERIFY_VALUE);
+    return true;
+}
+
+/* The declaration is a scalar in untrusted IR. Size slot storage only after
+ * deriving the count from copied arrays, including one binder per ListMap.
+ * All of those definitions must later be visited and have unique in-range IDs. */
+static bool census(Body *b) {
+    const TfCoreFunction *fn = b->function;
+    size_t actual = fn->parameter_count;
+    if (actual > fn->value_count || fn->capture_count > fn->value_count - actual)
+        return reject(b->verify, TF_CORE_VERIFY_VALUE);
+    actual += fn->capture_count;
+    for (size_t i = 0; i < fn->block_count; ++i) {
+        const TfCoreBlock *block = &fn->blocks[i];
+        if (block->let_count > fn->value_count - actual)
+            return reject(b->verify, TF_CORE_VERIFY_VALUE);
+        actual += block->let_count;
+        for (size_t j = 0; j < block->let_count; ++j) {
+            const TfCoreOperation *op = &block->lets[j].operation;
+            if (op->kind == TF_CORE_OP_LIST_MAP) {
+                if (actual == fn->value_count) return reject(b->verify, TF_CORE_VERIFY_VALUE);
+                ++actual;
             }
+            if (op->kind == TF_CORE_OP_SWITCH_TAG && op->operands.count == 1) {
+                const size_t count = op->as.switch_tag.case_count;
+                if (count > SIZE_MAX - b->key_count) {
+                    b->verify->resource_failure = true;
+                    return false;
+                }
+                b->key_count += count;
+            }
+        }
     }
+    if (actual != fn->value_count) {
+        b->verify->at.value = actual + 1;
+        return reject(b->verify, TF_CORE_VERIFY_VALUE);
+    }
+    return true;
+}
+
+static bool build_keys(Body *b) {
+    const TfCoreFunction *fn = b->function;
+    size_t n = 0, unique = 0;
+    if (b->key_count == 0) return true;
+    b->keys = workspace(b->verify, b->key_count, sizeof(*b->keys));
+    if (b->keys == NULL) return false;
+    for (size_t i = 0; i < fn->block_count; ++i) {
+        const TfCoreBlock *block = &fn->blocks[i];
+        for (size_t j = 0; j < block->let_count; ++j) {
+            const TfCoreOperation *op = &block->lets[j].operation;
+            if (op->kind != TF_CORE_OP_SWITCH_TAG || op->operands.count != 1) continue;
+            for (size_t k = 0; k < op->as.switch_tag.case_count; ++k)
+                b->keys[n++] = (Row){.first = op->operands.items[0],
+                                    .second = op->as.switch_tag.cases[k].tag};
+        }
+    }
+    if (!sort_rows(b->verify, b->keys, n, compare_keys)) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (unique == 0 || compare_keys(NULL, &b->keys[unique - 1], &b->keys[i]) != 0)
+            b->keys[unique++] = b->keys[i];
+    }
+    b->key_count = unique;
     return true;
 }
 
 static bool verify_body(Verify *v, const TfCoreFunction *fn) {
     Body b = {.verify = v, .function = fn};
     bool ok = false;
+    if (!census(&b)) return false;
+    if (fn->kind == TF_CORE_FUNCTION_ENTRY_ONLY) b.snapshot = fn->parameters[0].value;
     b.slots = workspace(v, fn->value_count, sizeof(*b.slots));
     if (fn->value_count != 0 && b.slots == NULL) goto cleanup;
     for (size_t i = 0; i < fn->value_count; ++i) b.slots[i] = (Slot){0};
@@ -973,8 +1091,7 @@ static bool verify_body(Verify *v, const TfCoreFunction *fn) {
     memset(b.seen, 0, fn->block_count);
     b.stack = workspace(v, fn->block_count, sizeof(*b.stack));
     if (b.stack == NULL) goto cleanup;
-    b.marks = workspace(v, v->max_tags, sizeof(*b.marks));
-    if (v->max_tags != 0 && b.marks == NULL) goto cleanup;
+    if (!build_keys(&b)) goto cleanup;
     for (size_t i = 0; i < fn->parameter_count; ++i) {
         const TfCoreParameter *p = &fn->parameters[i];
         v->at.span = p->span;
@@ -987,7 +1104,7 @@ static bool verify_body(Verify *v, const TfCoreFunction *fn) {
     }
     ok = walk_blocks(&b);
 cleanup:
-    release(v, b.marks);
+    release(v, b.keys);
     release(v, b.stack);
     release(v, b.seen);
     release(v, b.slots);

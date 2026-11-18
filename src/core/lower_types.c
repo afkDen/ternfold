@@ -5,7 +5,7 @@
 
 typedef union LowerChunk LowerChunk;
 union LowerChunk { LowerChunk *next; max_align_t alignment; };
-typedef struct { TfCoreTypeId list, tag; } TypeIndex;
+typedef struct { TfCoreTypeId list, tag, decision; } TypeIndex;
 struct TfCoreLowerTypes {
     const TfTypedProgram *typed;
     const TfTypeStore *source;
@@ -61,6 +61,22 @@ TfCoreTypeId tf_core_lower_type_id(const TfCoreLowerTypes *t, TfConcreteTypeId i
     return t != NULL && id.owner == t->source && id.index <= t->source_count ? id.index : 0;
 }
 
+TfCoreTypeId tf_core_lower_machine_id(const TfCoreLowerTypes *t, const TfMachinePlan *plan) {
+    if (t == NULL || plan == NULL) return 0;
+    const TfTypedNode *decl = tf_typed_program_node(t->typed,plan->declaration);
+    if (decl == NULL) return 0;
+    /* The declaration's type is its constructor signature, () -> Machine. */
+    const TfConcreteType *ctor = tf_type_store_get(t->source,decl->type);
+    if (ctor == NULL || ctor->kind != TF_CONCRETE_FUNCTION) return 0;
+    const TfConcreteTypeId result = ctor->as.function.result;
+    const TfConcreteType *machine = tf_type_store_get(t->source,result);
+    if (machine == NULL || machine->kind != TF_CONCRETE_MACHINE ||
+        machine->as.nominal.owner != plan->type.owner ||
+        machine->as.nominal.module_index != plan->type.module_index ||
+        machine->as.nominal.declaration_index != plan->type.declaration_index) return 0;
+    return tf_core_lower_type_id(t,result);
+}
+
 static TfCoreTypeKind kind_of(TfConcreteTypeKind kind) {
     switch (kind) {
     case TF_CONCRETE_INT: return TF_CORE_TYPE_INT;
@@ -80,15 +96,24 @@ static TfCoreTypeKind kind_of(TfConcreteTypeKind kind) {
     return 0;
 }
 
-static TfStatus append(TfCoreLowerTypes *t, TfCoreType type, TfCoreTypeId *out) {
+static bool ensure_types(TfCoreLowerTypes *t, size_t extra) {
     void *buffer = t->types;
-    if (t->type_count == SIZE_MAX ||
-        !tf_grow(&buffer,&t->type_capacity,t->type_count+1,sizeof *t->types,t->allocator))
-        return TF_HOST_ERROR;
+    if (extra > SIZE_MAX-t->type_count ||
+        !tf_grow(&buffer,&t->type_capacity,t->type_count+extra,sizeof *t->types,t->allocator))
+        return false;
     t->types = buffer;
+    return true;
+}
+
+static TfCoreTypeId push_type(TfCoreLowerTypes *t, TfCoreType type) {
     t->types[t->type_count++] = type;
-    *out = t->type_count;
-    return TF_OK;
+    return t->type_count;
+}
+
+static TfCoreTypeId push_list(TfCoreLowerTypes *t, TfCoreTypeId element) {
+    const TfCoreTypeId id = push_type(t,(TfCoreType){.kind=TF_CORE_TYPE_LIST,.as.element=element});
+    t->indexes[element-1].list = id;
+    return id;
 }
 
 static bool ensure_index(TfCoreLowerTypes *t, size_t count) {
@@ -108,8 +133,8 @@ TfStatus tf_core_lower_list(TfCoreLowerTypes *t, TfCoreTypeId element, TfCoreTyp
         t->types[element-1].kind == TF_CORE_TYPE_TAG || !ensure_index(t,element)) return TF_HOST_ERROR;
     *out = t->indexes[element-1].list;
     if (*out != 0) return TF_OK;
-    if (append(t,(TfCoreType){.kind=TF_CORE_TYPE_LIST,.as.element=element},out) != TF_OK) return TF_HOST_ERROR;
-    t->indexes[element-1].list = *out;
+    if (!ensure_types(t,1)) return TF_HOST_ERROR;
+    *out = push_list(t,element);
     return TF_OK;
 }
 
@@ -124,8 +149,30 @@ TfStatus tf_core_lower_tag(TfCoreLowerTypes *t, TfCoreTypeId tagged, TfCoreTypeI
     if (!ensure_index(t,tagged)) return TF_HOST_ERROR;
     *out = t->indexes[tagged-1].tag;
     if (*out != 0) return TF_OK;
-    if (append(t,(TfCoreType){.kind=TF_CORE_TYPE_TAG,.as.tagged=tagged},out) != TF_OK) return TF_HOST_ERROR;
+    if (!ensure_types(t,1)) return TF_HOST_ERROR;
+    *out = push_type(t,(TfCoreType){.kind=TF_CORE_TYPE_TAG,.as.tagged=tagged});
     t->indexes[tagged-1].tag = *out;
+    return TF_OK;
+}
+
+TfStatus tf_core_lower_decision(TfCoreLowerTypes *t, TfCoreTypeId machine, TfCoreTypeId *out) {
+    if (out == NULL) return TF_HOST_ERROR;
+    *out = 0;
+    if (t == NULL || machine == 0 || machine > t->source_count ||
+        t->types[machine-1].kind != TF_CORE_TYPE_MACHINE) return TF_HOST_ERROR;
+    *out = t->indexes[machine-1].decision;
+    if (*out != 0) return TF_OK;
+
+    /* A valid machine fixes O and E. Both are source IDs, so their indexes
+     * already exist. Copy IDs before growth can move the type table. */
+    const TfCoreTypeId output = t->types[machine-1].as.machine.output;
+    const TfCoreTypeId rejection = t->types[machine-1].as.machine.rejection;
+    TfCoreTypeId emissions = t->indexes[output-1].list;
+    if (!ensure_types(t,emissions == 0 ? 2 : 1)) return TF_HOST_ERROR;
+    if (emissions == 0) emissions = push_list(t,output);
+    *out = push_type(t,(TfCoreType){.kind=TF_CORE_TYPE_DECISION,
+                                  .as.decision={machine,output,rejection,emissions}});
+    t->indexes[machine-1].decision = *out;
     return TF_OK;
 }
 
@@ -212,7 +259,10 @@ static bool translate(TfCoreLowerTypes *t, const TfMachineProgram *p, size_t i) 
         out.as.decision.output = tf_core_lower_type_id(t,source->as.decision.output);
         out.as.decision.rejection = tf_core_lower_type_id(t,source->as.decision.rejection);
         if (out.as.decision.machine == 0 || out.as.decision.rejection == 0 ||
+            t->types[out.as.decision.machine-1].kind != TF_CORE_TYPE_MACHINE ||
+            t->indexes[out.as.decision.machine-1].decision != 0 ||
             tf_core_lower_list(t,out.as.decision.output,&out.as.decision.emissions) != TF_OK) return false;
+        t->indexes[out.as.decision.machine-1].decision = i+1;
         break;
     case TF_CORE_TYPE_FUNCTION: {
         const size_t count = source->as.function.arity;

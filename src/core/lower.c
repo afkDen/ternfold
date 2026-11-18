@@ -16,6 +16,11 @@ typedef struct { size_t index; Binding previous; } BindingUndo;
 typedef struct CaptureLink CaptureLink;
 struct CaptureLink { const TfResolvedCapture *capture; CaptureLink *next; };
 typedef struct {
+    const TfMachinePlan *plan;
+    TfCoreFunctionId init, step;
+    TfCoreTypeId decision;
+} MachineTarget;
+typedef struct {
     TfAllocator allocator, scratch_allocator;
     Scratch *scratch;
     const TfTypedProgram *typed;
@@ -26,6 +31,8 @@ typedef struct {
     TfCoreFunction *functions;
     TfCoreFunctionId *targets;
     Binding *bindings;
+    Binding *candidates;
+    MachineTarget *machines; /* indexed by original concrete machine type ID */
     BindingUndo *undo;
     size_t undo_count, undo_capacity, lift_depth;
     CaptureLink ***module_captures; /* indexed by module ID then AST node ID */
@@ -327,8 +334,16 @@ static bool builtin_operation(Lower *l, const TfAstNode *callee, const TfResolve
     const TfTypedNode *t=typed(l,callee->id);
     const TfConcreteType *fn=t!=NULL ? tf_type_store_get(l->store,t->type) : NULL;
     const TfCoreBuiltin kind=builtin(s->name);
-    if (kind==0) { (void)fail_at(l,TF_CORE_LOWER_UNSUPPORTED_FORM,callee); return false; }
     if (fn==NULL || fn->kind!=TF_CONCRETE_FUNCTION) return false;
+    if (spelling(s->name,"step")) {
+        if (fn->as.function.arity!=2 || l->machines==NULL) return false;
+        const TfCoreTypeId machine=tf_core_lower_type_id(l->types,fn->as.function.parameters[0]);
+        if (machine==0 || l->machines[machine].step==0) return false;
+        op->kind=TF_CORE_OP_CALL;
+        op->as.function=l->machines[machine].step;
+        return true;
+    }
+    if (kind==0) return false;
     size_t n=0;
     TfCoreTypeId *args=NULL;
     if (kind==TF_CORE_BUILTIN_LEN || kind==TF_CORE_BUILTIN_AT || kind==TF_CORE_BUILTIN_APPEND ||
@@ -364,7 +379,7 @@ static TfCoreFunctionId builtin_wrapper(Lower *l, const TfAstNode *n,
                                         const TfResolvedSymbol *s, TfCoreTypeId type) {
     const size_t count=tf_type_store_count(l->store);
     const TfCoreBuiltin kind=builtin(s->name);
-    if (kind==0) return fail_at(l,TF_CORE_LOWER_UNSUPPORTED_FORM,n);
+    if (kind==0 && !spelling(s->name,"step")) return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
     if (type==0 || type>count) return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
     if (l->wrappers==NULL) {
         l->wrappers=array(l,count,sizeof *l->wrappers);
@@ -426,8 +441,12 @@ static TfCoreValueId call(Lower *l, TfCoreBlockId b, const TfAstNode *n, TfCoreT
         if (!variant_tag(l,s,&op.as.variant.tag)) return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
     } else if (s!=NULL && s->kind==TF_SYMBOL_CONSTRUCTOR) {
         const TfResolvedType *owner=tf_resolution_type(l->resolution,s->type);
-        if (owner==NULL || owner->kind!=TF_TYPE_RECORD) return fail_at(l,TF_CORE_LOWER_UNSUPPORTED_FORM,n);
-        op.kind=TF_CORE_OP_RECORD; op.as.constructed_type=type; named=true;
+        if (owner!=NULL && owner->kind==TF_TYPE_RECORD) {
+            op.kind=TF_CORE_OP_RECORD; op.as.constructed_type=type; named=true;
+        } else if (owner!=NULL && owner->kind==TF_TYPE_MACHINE && l->machines!=NULL &&
+                   type<=tf_type_store_count(l->store) && l->machines[type].init!=0) {
+            op.kind=TF_CORE_OP_CALL; op.as.function=l->machines[type].init;
+        } else return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
     } else if (s!=NULL && s->kind==TF_SYMBOL_BUILTIN) {
         if (!builtin_operation(l,callee,s,&op)) return fail_at(l,TF_CORE_LOWER_INVARIANT,n);
     } else { op.kind=TF_CORE_OP_CALL_CLOSURE; base=1; }
@@ -585,6 +604,14 @@ static TfCoreValueId expression(Lower *l, TfCoreBlockId b, TfNodeId id) {
     switch (n->kind) {
     case TF_AST_LITERAL: case TF_AST_UNIT: v=literal(l,b,n,type); break;
     case TF_AST_PATH: v=path(l,b,n,type); break;
+    case TF_AST_NEXT: {
+        const TfResolvedSymbol *s=target(l,n->id);
+        const size_t i=s!=NULL ? symbol_index(l,s->id) : 0;
+        if (i==0 || l->candidates==NULL || l->candidates[i].function!=l->function)
+            v=fail_at(l,TF_CORE_LOWER_INVARIANT,n);
+        else v=l->candidates[i].value;
+        break;
+    }
     case TF_AST_GROUP: v=expression(l,b,n->as.group.expression); break;
     case TF_AST_BLOCK: v=lower_block(l,b,n); break;
     case TF_AST_UNARY: case TF_AST_BINARY: v=operation(l,b,n,type); break;
@@ -705,6 +732,140 @@ static bool function(Lower *l, const TfResolvedSymbol *s) {
     return true;
 }
 
+static bool index_machines(Lower *l, const TfMachineProgram *program) {
+    const size_t count=tf_type_store_count(l->store);
+    const size_t plans=tf_machine_program_count(program);
+    if (plans==0) return true;
+    if (count==SIZE_MAX) return false;
+    l->machines=array(l,count+1,sizeof *l->machines);
+    l->candidates=array(l,l->symbol_count+1,sizeof *l->candidates);
+    if (l->failed) return false;
+    for (size_t i=0; i<=l->symbol_count; ++i) l->candidates[i]=(Binding){0};
+    l->machines[0]=(MachineTarget){0};
+    size_t indexed=0;
+    for (size_t i=1; i<=count && !l->failed; ++i) {
+        const TfConcreteType *type=tf_type_store_at(l->store,i-1);
+        MachineTarget target_info={0};
+        if (type->kind==TF_CONCRETE_MACHINE) {
+            target_info.plan=tf_machine_program_get(program,type->as.nominal);
+            if (target_info.plan==NULL || tf_core_lower_decision(l->types,i,&target_info.decision)!=TF_OK)
+                return false;
+            target_info.init=append_function(l);
+            target_info.step=append_function(l);
+            ++indexed;
+        }
+        l->machines[i]=target_info;
+    }
+    return !l->failed && indexed==plans;
+}
+
+static void machine_body(Lower *l, TfCoreFunctionId id, const TfResolvedModule *module) {
+    l->function=id; l->module=module; l->blocks=NULL;
+    l->block_count=0; l->block_capacity=0; l->value_count=0;
+}
+
+static TfCoreValueId machine_value(Lower *l, TfCoreBlockId block, TfCoreTypeId machine,
+                                   TfCoreValueId *cells, size_t count, TfSpan span) {
+    return emit(l,block,machine,(TfCoreOperation){.kind=TF_CORE_OP_MACHINE_VALUE,
+                .operands={cells,count},.as.constructed_type=machine},span);
+}
+
+static TfCoreValueId decision_value(Lower *l, TfCoreBlockId block, TfCoreTypeId decision,
+                                    size_t tag, TfCoreValueId snapshot, TfCoreValueId argument, TfSpan span) {
+    const TfCoreValueId args[]={snapshot,argument};
+    return emit(l,block,decision,(TfCoreOperation){.kind=TF_CORE_OP_VARIANT,
+        .operands=operands(l,args,2),.as.variant={decision,tag}},span);
+}
+
+static bool machine_init(Lower *l, const MachineTarget *target_info, TfCoreTypeId type,
+                          const TfResolvedModule *module) {
+    const TfMachinePlan *plan=target_info->plan;
+    machine_body(l,target_info->init,module);
+    TfCoreFunction out={.kind=TF_CORE_FUNCTION_ORDINARY,
+        .name={(const unsigned char *)"$machine_init",sizeof "$machine_init"-1},
+        .module=tf_core_lower_module_name(module),.span=origin(l,plan->span),.result=type};
+    out.body=new_block(l,plan->span);
+    TfCoreValueId *cells=array(l,plan->cell_count,sizeof *cells);
+    for (size_t i=0; i<plan->cell_count && !l->failed; ++i) {
+        const TfMachineCell *cell=&plan->cells[i];
+        TfCoreConstantId constant;
+        if (tf_core_lower_initializer_constant(l->constants,cell->declaration.node,&constant)!=TF_OK) {
+            l->failed=true; break;
+        }
+        cells[i]=emit(l,out.body,tf_core_lower_type_id(l->types,cell->type),
+                      (TfCoreOperation){.kind=TF_CORE_OP_CONST,.as.constant=constant},cell->declaration.span);
+    }
+    const TfCoreValueId value=machine_value(l,out.body,type,cells,plan->cell_count,plan->span);
+    finish(l,out.body,value,plan->span);
+    return save_function(l,out);
+}
+
+static bool machine_step(Lower *l, const MachineTarget *target_info, TfCoreTypeId type,
+                          const TfResolvedModule *module) {
+    const TfMachinePlan *plan=target_info->plan;
+    const TfAstNode *n=node(plan->declaration);
+    const TfAstNode *input=node(n->as.machine.parameter);
+    TfCoreProgramData data={0};
+    tf_core_lower_type_view(l->types,&data);
+    const TfCoreType *layout=tf_core_type(&data,type);
+    const TfCoreType *decision=tf_core_type(&data,target_info->decision);
+    const TfCoreTypeId emissions_type=decision->as.decision.emissions;
+    const TfCoreTypeId output_type=layout->as.machine.output;
+    machine_body(l,target_info->step,module);
+    TfCoreFunction out={.kind=TF_CORE_FUNCTION_ORDINARY,
+        .name={(const unsigned char *)"$machine_step",sizeof "$machine_step"-1},
+        .module=tf_core_lower_module_name(module),.span=origin(l,plan->span),
+        .parameter_count=2,.result=target_info->decision};
+    TfCoreParameter *params=array(l,2,sizeof *params);
+    if (l->failed) return false;
+    out.parameters=params;
+    const TfCoreValueId snapshot=fresh(l);
+    params[0]=(TfCoreParameter){snapshot,type,{(const unsigned char *)"$old",sizeof "$old"-1},out.span};
+    params[1]=(TfCoreParameter){fresh(l),layout->as.machine.input,text(input->as.parameter.name),origin(l,input->span)};
+    if (!set_binding(l,symbol_index(l,plan->input),params[1].value)) return false;
+    out.body=new_block(l,plan->span);
+    TfCoreValueId *values=array(l,plan->cell_count,sizeof *values);
+    for (size_t i=0; i<plan->cell_count && !l->failed; ++i) {
+        const TfMachineCell *cell=&plan->cells[i];
+        const TfCoreValueId old=emit(l,out.body,tf_core_lower_type_id(l->types,cell->type),
+            (TfCoreOperation){.kind=TF_CORE_OP_PROJECT,.operands=operands(l,&snapshot,1),.as.field=i},
+            cell->declaration.span);
+        if (!set_binding(l,symbol_index(l,cell->symbol),old)) return false;
+    }
+    if (plan->schedule_count!=plan->cell_count) return false;
+    for (size_t i=0; i<plan->schedule_count && !l->failed; ++i) {
+        const TfMachineCellId cell_index=plan->schedule[i];
+        const TfMachineCell *cell=&plan->cells[cell_index];
+        const TfMachineWriter *writer=&plan->writers[cell->writers[0]];
+        const TfCoreValueId value=expression(l,out.body,writer->clause.expression);
+        l->candidates[cell->symbol.index]=(Binding){value,l->function};
+        values[cell_index]=value;
+    }
+    TfCoreBlockId accept=out.body;
+    for (size_t i=0; i<plan->guard_count && !l->failed; ++i) {
+        const TfMachineGuard *guard=&plan->guards[i];
+        const TfCoreValueId condition=expression(l,accept,guard->clause.expression);
+        const TfCoreBlockId yes=new_block(l,guard->clause.span), no=new_block(l,guard->clause.span);
+        const TfCoreValueId error=expression(l,no,guard->rejection);
+        const TfCoreValueId rejected=decision_value(l,no,out.result,TF_CORE_DECISION_REJECT,
+                                                    snapshot,error,guard->clause.span);
+        finish(l,no,rejected,guard->clause.span);
+        const TfCoreValueId branch=if_op(l,accept,out.result,condition,yes,no,guard->clause.span);
+        finish(l,accept,branch,guard->clause.span);
+        accept=yes;
+    }
+    TfCoreValueId *emissions=array(l,plan->emission_count,sizeof *emissions);
+    for (size_t i=0; i<plan->emission_count && !l->failed; ++i)
+        emissions[i]=expression(l,accept,plan->emissions[i].expression);
+    const TfCoreValueId emitted=emit(l,accept,emissions_type,(TfCoreOperation){.kind=TF_CORE_OP_LIST,
+        .operands={emissions,plan->emission_count},.as.element_type=output_type},plan->span);
+    const TfCoreValueId next=machine_value(l,accept,type,values,plan->cell_count,plan->span);
+    const TfCoreValueId accepted=decision_value(l,accept,out.result,TF_CORE_DECISION_ACCEPT,
+                                                next,emitted,plan->span);
+    finish(l,accept,accepted,plan->span);
+    return save_function(l,out);
+}
+
 TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
                        const TfAllocator *allocator, TfCoreLowerIssue *issue) {
     Lower l={.allocator=tf_allocator(allocator)};
@@ -714,10 +875,6 @@ TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
     *out=NULL;
     if (!tf_allocator_valid(l.allocator) || tf_diagnostic_phase_kind(tf_machine_program_phase(p))!=TF_DIAG_PHASE_VALID ||
         tf_diagnostic_phase_payload(tf_machine_program_phase(p))!=p) return TF_HOST_ERROR;
-    if (tf_machine_program_count(p)!=0) {
-        (void)fail_at(&l,TF_CORE_LOWER_UNSUPPORTED_FORM,node(tf_machine_program_at(p,0)->declaration));
-        goto done;
-    }
     l.scratch_allocator=(TfAllocator){&l,scratch_allocate,scratch_release};
     l.typed=tf_machine_program_typed(p);
     l.resolution=tf_typed_program_resolution(l.typed);
@@ -737,11 +894,21 @@ TfStatus tf_core_lower(TfCoreProgram **out, const TfMachineProgram *p,
     l.functions=array(&l,l.function_count,sizeof *l.functions);
     l.function_capacity=l.function_count;
     if (l.failed || tf_core_lower_types_create(&l.types,p,&l.allocator)!=TF_OK ||
-        tf_core_lower_constants_create(&l.constants,l.types,&l.allocator)!=TF_OK) goto done;
+        tf_core_lower_constants_create(&l.constants,l.types,&l.allocator)!=TF_OK ||
+        !index_machines(&l,p)) goto done;
     for (size_t i=0; i<l.symbol_count; ++i) {
         const TfResolvedSymbol *s=tf_resolution_symbol_at(l.resolution,i);
         if (s->kind==TF_SYMBOL_FUNCTION && !function(&l,s)) goto done;
     }
+    if (l.machines!=NULL)
+        for (size_t i=1; i<=tf_type_store_count(l.store); ++i) {
+            const MachineTarget *machine=&l.machines[i];
+            if (machine->plan==NULL) continue;
+            const TfResolvedModule *module=tf_resolution_module(l.resolution,
+                (TfModuleId){l.resolution,machine->plan->type.module_index});
+            if (module==NULL || !machine_init(&l,machine,i,module) || !machine_step(&l,machine,i,module))
+                goto done;
+        }
     TfCoreProgramData d={.functions=l.functions,.function_count=l.function_count,.entry=l.entry};
     tf_core_lower_type_view(l.types,&d);
     tf_core_lower_constant_view(l.constants,&d);
