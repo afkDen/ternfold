@@ -315,7 +315,7 @@ static void test_errors_caps(const char *exe) {
 }
 static void test_usage_host(const char *exe) {
     char path[PATH_CAPACITY], bad_path[PATH_CAPACITY], missing[PATH_CAPACITY], table[PATH_CAPACITY];
-    const char *commands[] = {"run","check","compile","unknown"}; size_t i;
+    const char *commands[] = {"run","compile","unknown"}; size_t i;
     join_path(path,root,"valid.tfd"); write_text(path,"let a = 1;");
     join_path(missing,root,"missing");
     for (i = 0; i < sizeof(commands)/sizeof(commands[0]); ++i) {
@@ -360,6 +360,37 @@ static void test_usage_host(const char *exe) {
     equal(table,"TOKEN TYPE\tLEXEME\nINVALID\t\"@\"\n"); CHECK(remove(table) == 0);
     write_text(path,"\r"); CHECK(tokens(exe,path,false,false,root) == 1);
     equal(table,"TOKEN TYPE\tLEXEME\n"); CHECK(remove(table) == 0);
+}
+static void test_check_cli(const char *exe) {
+    char entry[PATH_CAPACITY], helper[PATH_CAPACITY], table[PATH_CAPACITY];
+    join_path(entry,root,"check root.tfd");
+    join_path(helper,root,"helper.tfd");
+    join_path(table,root,"Symbol Table.txt");
+    {
+        const char *args[] = {exe,"check",entry,"--root",root,"--diagnostics-json",NULL};
+        const char *duplicate[] = {exe,"check",entry,"--root",root,"--root",root,NULL};
+        const char *no_root[] = {exe,"check",entry,"--root",NULL};
+        const char *wrong_option[] = {exe,"check",entry,"--symbol-table",root,NULL};
+        write_text(helper,"pub fn one() -> Int { 1 }");
+        /* Deliberate type mismatch: this command checks names, not types. */
+        write_text(entry,"import \"helper.tfd\" as helper; pub fn library() -> Bool { helper::one() }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 0);
+        contains(output_path,"types and later phases were not checked");
+        contains(error_path,"\"schema_version\":2");
+        CHECK(spawn(args,BROKEN_PIPE,CAPTURE) == 2);
+        CHECK(spawn(duplicate,CAPTURE,CAPTURE) == 2);
+        CHECK(spawn(no_root,CAPTURE,CAPTURE) == 2);
+        CHECK(spawn(wrong_option,CAPTURE,CAPTURE) == 2);
+        write_text(helper,"fn one() -> Int { 1 }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); equal(output_path,"");
+        contains(error_path,"\"code\":\"E206\""); contains(error_path,"helper.tfd");
+        CHECK(spawn(args,CAPTURE,BROKEN_PIPE) == 2);
+        CHECK(remove(helper) == 0);
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E204\"");
+        write_text(entry,"pub fn library() -> Int { absent }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E203\"");
+        absent(table);
+    }
 }
 static void test_examples(const char *exe) {
     static const char *const examples[] = {
@@ -465,7 +496,8 @@ static void test_writer_no_allocations(void) {
 int main(int argc, char **argv) {
     CHECK(argc == 2); setup();
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
-    test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();test_ast_cli(argv[1]);
+    test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
+    test_ast_cli(argv[1]); test_check_cli(argv[1]);
     (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
     return 0;
 }

@@ -62,6 +62,8 @@ static void test_snapshots(void) {
     write_bytes(path, "old", 3);
     CHECK(tf_source_manager_create(&m, NULL) == TF_OK);
     CHECK(tf_source_manager_create(&other, NULL) == TF_OK);
+    CHECK(tf_source_manager_cached(m, path, &again) == TF_OK && again == NULL);
+    CHECK(tf_source_manager_count(m) == 0);
     CHECK(tf_source_manager_load(m, path, &first) == TF_OK);
     CHECK(first->source->length == 3);
     CHECK(first->status == TF_OK && first->id.index != 0);
@@ -84,6 +86,8 @@ static void test_snapshots(void) {
     CHECK(tf_source_manager_load(m, path, &again) == TF_OK && again == first);
     CHECK(first->source->length == 3 && memcmp(first->source->bytes, "old", 3) == 0);
     CHECK(remove(path) == 0);
+    CHECK(tf_source_manager_cached(m, relative, &again) == TF_OK && again == first);
+    CHECK(tf_source_manager_cached(m, dot, &again) == TF_OK && again == first);
     CHECK(tf_source_manager_load(m, path, &again) == TF_OK && again == first);
     CHECK(tf_source_manager_load(m, relative, &again) == TF_OK && again == first);
     CHECK(tf_source_manager_load(m, dot, &again) == TF_OK && again == first);
@@ -116,6 +120,7 @@ static void test_invalid(void) {
         write_bytes(path, "valid", 5);
         CHECK(tf_source_manager_load(m, path, &again) == TF_SOURCE_ERROR && again == entry);
         CHECK(remove(path) == 0);
+        CHECK(tf_source_manager_cached(m, path, &again) == TF_SOURCE_ERROR && again == entry);
         CHECK(tf_source_manager_load(m, path, &again) == TF_SOURCE_ERROR && again == entry);
         CHECK(tf_source_manager_lookup(m, entry->id) == entry);
     }
