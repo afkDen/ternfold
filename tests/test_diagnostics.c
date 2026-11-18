@@ -131,7 +131,7 @@ static void test_goldens(void) {
     golden(bag,TF_DIAG_JSON,"tests/fixtures/diagnostics/basic.json");
     json = render(bag,TF_DIAG_JSON,TF_DIAG_COLOR_ALWAYS); validate_json(json);
     {
-        FILE *file = fopen("build/m02-diagnostics-worker-v2.json","wb");
+        FILE *file = fopen("build/m02-diagnostics-v2.json","wb");
         CHECK(file != NULL); CHECK(fwrite(json,1,strlen(json),file) == strlen(json)); CHECK(fclose(file) == 0);
     }
     again = render(bag,TF_DIAG_JSON,TF_DIAG_COLOR_NEVER); CHECK(strcmp(json,again) == 0);

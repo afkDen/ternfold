@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Expand installation, command reference, tutorial and troubleshooting guides.
+- Document the reconstructed milestones and add focused stage replay to CI.
+- Remove internal workflow notes from the public documentation.
+
 ## 0.2.0
 
 - C17 frontend, reference interpreter, C emitter and native runtime.

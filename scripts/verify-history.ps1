@@ -17,6 +17,8 @@ try {
     if ($LASTEXITCODE -ne 0 -or $tag -cne $record.original_release_tag_object) { throw 'Original release tag changed' }
     $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $blobs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $documents = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'public-documents.json') | ConvertFrom-Json
+    if ($documents.schema -ne 1 -or -not $documents.paths.Count) { throw 'Invalid public document inventory' }
     $contentPattern = 'BEGIN (OPENSSH|RSA|EC|DSA|ENCRYPTED) PRIVATE KEY|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,}|[A-Z]:[/\\]Users[/\\]|[\w.+-]+@(gmail|outlook)\.com'
     for ($i=0; $i -lt $commits.Count; $i++) {
         $commit = $commits[$i]
@@ -46,7 +48,15 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect history tree' }
     }
     foreach ($path in $paths) {
-        if ($path -match '(^|/)(\.agents|\.codex|\.git|\.env|AGENTS\.md|MASTER_IMPLEMENTATION\.md)(/|$)' -or
+        $roots = @('.editorconfig','.gitattributes','.gitignore','README.md','CONTRIBUTING.md',
+            'CHANGELOG.md','build.bat')
+        $directories = @('.github','benchmarks','docs','examples','experiments','include',
+            'runtime','scripts','src','stdlib','tests','tools')
+        if (($path -notmatch '/' -and $path -cnotin $roots) -or
+            ($path -match '/' -and ($path -split '/',2)[0] -cnotin $directories) -or
+            ($path -match '/' -and
+             (($path -replace '^\.github/','') -replace '(^|/)\.gitignore$','$1ignore') -match '(^|/)\.') -or
+            ($path -match '\.md$' -and $path -cnotin $documents.paths) -or
             $path -match '^(build|dist|output|tmp|submission|docs/(proposal|verification))/' -or
             $path -match '\.(pdf|docx|zip|exe|dll|pdb|pem|key)$') { throw "Unexpected historical path: $path" }
     }

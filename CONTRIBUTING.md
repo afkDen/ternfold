@@ -5,6 +5,9 @@ the programs whose behavior changes and update the specification with the
 implementation. For a bug, include a short reproducer and the expected
 output or diagnostic. Keep checked-in fixtures small.
 
+Public document paths are listed in `scripts/public-documents.json`. Update
+the inventory when adding or renaming a page.
+
 ```powershell
 $cc = 'C:/toolchain/bin/clang.exe'
 ./scripts/build.ps1 check -Compiler $cc
