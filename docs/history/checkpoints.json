@@ -1,0 +1,400 @@
+{
+  "schema": 1,
+  "description": "Retrospective source and conformance changes from actual C17 checkpoints; dates are reconstruction dates and do not imply historical CI.",
+  "baseline": "68aa5b9f100efb97490b130db146b6e398d78244",
+  "history_tip": "37b1913663b149deb78d88bb26228dfa7183967e",
+  "original_release_tag": "v0.2.0",
+  "original_release_tag_object": "01b7658ebaf1b5f6eefccc7aec598df195904b95",
+  "checkpoints": [
+    {
+      "commit": "c4cd3a283082fe7da09ace9ad38381acd3d4ecfb",
+      "source_checkpoint": "5f339af8ae16a30d4cb749051f2048c5a84bd9a6",
+      "group": "implementation",
+      "files_changed": 6
+    },
+    {
+      "commit": "4c6e20c457103d0ee291b41a2de3a91ac4b04d11",
+      "source_checkpoint": "5f339af8ae16a30d4cb749051f2048c5a84bd9a6",
+      "group": "conformance",
+      "files_changed": 27
+    },
+    {
+      "commit": "0e627f721b0bd4485eca05b64a478e92a815e83b",
+      "source_checkpoint": "030c92dd853918cd6525b9df53694ea5a28ddf36",
+      "group": "implementation",
+      "files_changed": 2
+    },
+    {
+      "commit": "4460e0a4920ce813a1579c86b5fc6f4aea194f3a",
+      "source_checkpoint": "030c92dd853918cd6525b9df53694ea5a28ddf36",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "669010b6be43b539278c6dc4df1ebe8f91e065e2",
+      "source_checkpoint": "dfb4e1b30593bea77c1e75f9b5be8489967d9fe8",
+      "group": "implementation",
+      "files_changed": 2
+    },
+    {
+      "commit": "18e896e38c3b68605742d3656bdeafc82b76d091",
+      "source_checkpoint": "dfb4e1b30593bea77c1e75f9b5be8489967d9fe8",
+      "group": "conformance",
+      "files_changed": 7
+    },
+    {
+      "commit": "44db4ec69aee7fd36167b1544b0de86f8088224b",
+      "source_checkpoint": "2772da001726632e3d1d06075f7e0a857fb75ab3",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "6d5541ad85198f273d6fe8d4896cc90524ba49f7",
+      "source_checkpoint": "2772da001726632e3d1d06075f7e0a857fb75ab3",
+      "group": "conformance",
+      "files_changed": 4
+    },
+    {
+      "commit": "c7137f32ad7660edbf08b7790c73f12484e971ae",
+      "source_checkpoint": "db5b87f3f9f6fcef62ad4d1104e8e373f9f40fe5",
+      "group": "implementation",
+      "files_changed": 4
+    },
+    {
+      "commit": "d5383de8881588864d376776ebd700404210a308",
+      "source_checkpoint": "db5b87f3f9f6fcef62ad4d1104e8e373f9f40fe5",
+      "group": "conformance",
+      "files_changed": 9
+    },
+    {
+      "commit": "c5c6a4429a842262ea9a75b930725d5507e6fdca",
+      "source_checkpoint": "7d8e974c0f699debf54f2b35dfa2bc9ee1b6c295",
+      "group": "implementation",
+      "files_changed": 7
+    },
+    {
+      "commit": "24b78492a244d03c607c5407ef37f6d74022ae83",
+      "source_checkpoint": "7d8e974c0f699debf54f2b35dfa2bc9ee1b6c295",
+      "group": "conformance",
+      "files_changed": 4
+    },
+    {
+      "commit": "da34f4043c688f0b336cb68ccd7eeaeca00346b9",
+      "source_checkpoint": "0d3d2866cd5fd3833d1b2208ae608494481ac70b",
+      "group": "implementation",
+      "files_changed": 10
+    },
+    {
+      "commit": "0c9cccc209942b2fc75a4cc9c9dcf1f8f183a2c5",
+      "source_checkpoint": "0d3d2866cd5fd3833d1b2208ae608494481ac70b",
+      "group": "conformance",
+      "files_changed": 5
+    },
+    {
+      "commit": "1d1ef776f79f08fc18b19c24aa4f6c7e2a1feaa2",
+      "source_checkpoint": "fe59cc9221d2c83d98b748cc9c7808d56ce6f70b",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "5c6ace41d4e5d53f4c75ccc0abb262527a07997d",
+      "source_checkpoint": "91c00827303f60127b1923f36c00a53c24fdead5",
+      "group": "implementation",
+      "files_changed": 12
+    },
+    {
+      "commit": "b802224434f0800d6d5888b101fab57e6f8badcd",
+      "source_checkpoint": "91c00827303f60127b1923f36c00a53c24fdead5",
+      "group": "conformance",
+      "files_changed": 10
+    },
+    {
+      "commit": "c2123b6ade175c992607e259c82efa039c83549a",
+      "source_checkpoint": "6a0796598096a2e1cec5610163dd5cddeb10f76a",
+      "group": "implementation",
+      "files_changed": 17
+    },
+    {
+      "commit": "fd35e33bf06596a56b8262ba3c42074a5fb01b2f",
+      "source_checkpoint": "6a0796598096a2e1cec5610163dd5cddeb10f76a",
+      "group": "conformance",
+      "files_changed": 12
+    },
+    {
+      "commit": "986266b8ced4eb7bd3380eab8092d1403f1a986f",
+      "source_checkpoint": "9a57a2788a3024e666fc70bc9b97b7392ed3246d",
+      "group": "implementation",
+      "files_changed": 5
+    },
+    {
+      "commit": "77d81a0b5e22cf81b97c4d48a6c6577f4a4fd997",
+      "source_checkpoint": "9a57a2788a3024e666fc70bc9b97b7392ed3246d",
+      "group": "conformance",
+      "files_changed": 10
+    },
+    {
+      "commit": "691b803921088f77cc62f214cd93915ad88c704a",
+      "source_checkpoint": "080d620d885fd3d779ef8d843d5f3e9d5d1b356b",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "cf0b39757e9162a0cb884e0fdd06f1d14c59c974",
+      "source_checkpoint": "080d620d885fd3d779ef8d843d5f3e9d5d1b356b",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "248e1793cee500c3c72df9c2ae2abaa8eb9a1214",
+      "source_checkpoint": "1e0a4ac823f0dc5057db92c233ee00b5244469cf",
+      "group": "implementation",
+      "files_changed": 1
+    },
+    {
+      "commit": "f820f8706030f30dfbf7b1327a5013528c3b8972",
+      "source_checkpoint": "1e0a4ac823f0dc5057db92c233ee00b5244469cf",
+      "group": "conformance",
+      "files_changed": 8
+    },
+    {
+      "commit": "0356d939170ead4e162a39fe2a4d0c79266e7b3c",
+      "source_checkpoint": "b772454144c5f60ff1a341a9408e1905b049ea3c",
+      "group": "implementation",
+      "files_changed": 15
+    },
+    {
+      "commit": "0c4a8b66ce48be994fbffc5abc29164a2787e738",
+      "source_checkpoint": "b772454144c5f60ff1a341a9408e1905b049ea3c",
+      "group": "conformance",
+      "files_changed": 10
+    },
+    {
+      "commit": "c860ef6afb2fdf0cc9e98f466617c081df7f45a0",
+      "source_checkpoint": "b63842e5f8458044ff0b7af7ecdd94118cf70b28",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "9a441f92a87fb56747a3b838356d38984876b388",
+      "source_checkpoint": "b63842e5f8458044ff0b7af7ecdd94118cf70b28",
+      "group": "conformance",
+      "files_changed": 4
+    },
+    {
+      "commit": "4e048abbc642dfa08eca8ba0364579990f5271ee",
+      "source_checkpoint": "6cbca40f168e77c24183672d501cd8dad3e8eef8",
+      "group": "implementation",
+      "files_changed": 4
+    },
+    {
+      "commit": "07d595f7051a5ac49931e91663e976f230251721",
+      "source_checkpoint": "6cbca40f168e77c24183672d501cd8dad3e8eef8",
+      "group": "conformance",
+      "files_changed": 5
+    },
+    {
+      "commit": "cc5be541c4b3f5d57fcc9befb914e90a5ff9b54d",
+      "source_checkpoint": "a293c4c385320610275c5b6fa06052f39551d3d3",
+      "group": "implementation",
+      "files_changed": 11
+    },
+    {
+      "commit": "10320eaa6da39bc5ca40e2daf346cdd2f836f6ab",
+      "source_checkpoint": "a293c4c385320610275c5b6fa06052f39551d3d3",
+      "group": "conformance",
+      "files_changed": 9
+    },
+    {
+      "commit": "7be72952231a343610965829dfa0137c411ba6fa",
+      "source_checkpoint": "64c5d85d2d70bb108acf72d61a62d17b3ae93d20",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "bdacff7f693ce5a653662d6c45e307a69e0f753f",
+      "source_checkpoint": "64c5d85d2d70bb108acf72d61a62d17b3ae93d20",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "a5dbea47adf7554582c654a7e03d41c20c4681df",
+      "source_checkpoint": "950cb12ac8a9da92eeac24149680ffb1d500d232",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "fcff55d81fb998411ca9ff39ad7e5679406e1b41",
+      "source_checkpoint": "950cb12ac8a9da92eeac24149680ffb1d500d232",
+      "group": "conformance",
+      "files_changed": 2
+    },
+    {
+      "commit": "f775cc61d79877a664865fd7b074b35723c5d62c",
+      "source_checkpoint": "66b3717f788301467acbfd32506aadcaa71eb942",
+      "group": "implementation",
+      "files_changed": 21
+    },
+    {
+      "commit": "505a5bee01968d2846f147ba3b0adcaf2ace9d9f",
+      "source_checkpoint": "66b3717f788301467acbfd32506aadcaa71eb942",
+      "group": "conformance",
+      "files_changed": 14
+    },
+    {
+      "commit": "3e5ace2fa2771fa34b6ec7eae443a4987f614141",
+      "source_checkpoint": "19c7585431c0625fcf906c2e2dc1866d55e452b1",
+      "group": "implementation",
+      "files_changed": 12
+    },
+    {
+      "commit": "b06a768f722cf00e8833316cdbba0c798f705051",
+      "source_checkpoint": "19c7585431c0625fcf906c2e2dc1866d55e452b1",
+      "group": "conformance",
+      "files_changed": 6
+    },
+    {
+      "commit": "3255cf4e0516a7640f7f7f81e916843a76bf55cd",
+      "source_checkpoint": "88bee4157ffc1b3bb4ee170a5f1b102c79192bde",
+      "group": "implementation",
+      "files_changed": 2
+    },
+    {
+      "commit": "9b0d3d86241e1a2f01f20b51daebe7d0f114605c",
+      "source_checkpoint": "88bee4157ffc1b3bb4ee170a5f1b102c79192bde",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "d1b99a703d9a149b8f44073d40cac3b4e2faaaf8",
+      "source_checkpoint": "1213c3d3f62e6996cd846f4d42d01a789272830a",
+      "group": "implementation",
+      "files_changed": 15
+    },
+    {
+      "commit": "cee5338c271912d146bf9d14fe7d42c18d7d797b",
+      "source_checkpoint": "1213c3d3f62e6996cd846f4d42d01a789272830a",
+      "group": "conformance",
+      "files_changed": 17
+    },
+    {
+      "commit": "13b2897b43825a2c24abf4069dabd8ed42eec616",
+      "source_checkpoint": "9cd4b0d0c6f12d3e04211ffc374d70ca1673f4ff",
+      "group": "implementation",
+      "files_changed": 2
+    },
+    {
+      "commit": "9e33ce62cd5e9e5d97ef00beb8cac7d2e8f1f55b",
+      "source_checkpoint": "9cd4b0d0c6f12d3e04211ffc374d70ca1673f4ff",
+      "group": "conformance",
+      "files_changed": 19
+    },
+    {
+      "commit": "7553719159fa70bc7e864afb3b94e74f149cc9f9",
+      "source_checkpoint": "61ddbef0a66f8524e049de4f7ddd6ae12818b878",
+      "group": "conformance",
+      "files_changed": 4
+    },
+    {
+      "commit": "2f1cd4469c5afcb796fd7d9bd1eb7edd130932c8",
+      "source_checkpoint": "8f24373e3aa46badda65f7e4c5c6a9095fc0707b",
+      "group": "implementation",
+      "files_changed": 18
+    },
+    {
+      "commit": "7d55b60b34463da9eea081f9c777b4478db49acf",
+      "source_checkpoint": "8f24373e3aa46badda65f7e4c5c6a9095fc0707b",
+      "group": "conformance",
+      "files_changed": 5
+    },
+    {
+      "commit": "b10345fb0a48fd568d4dcafeefc64c0d7e1512c2",
+      "source_checkpoint": "bc063ff694297b2f1909f70c440c4f001e8867fc",
+      "group": "implementation",
+      "files_changed": 3
+    },
+    {
+      "commit": "5f69864ec4f9898463a027913a5217ec5ec15654",
+      "source_checkpoint": "bc063ff694297b2f1909f70c440c4f001e8867fc",
+      "group": "conformance",
+      "files_changed": 5
+    },
+    {
+      "commit": "8cbaa572d6f2ece6b0a4246632c82b8043a053ea",
+      "source_checkpoint": "1b17cf0f3191bf944da5802ac19540e2ff64bbe7",
+      "group": "implementation",
+      "files_changed": 1
+    },
+    {
+      "commit": "16dcb9d8158bd49027bb8118022a000578e90a83",
+      "source_checkpoint": "1b17cf0f3191bf944da5802ac19540e2ff64bbe7",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "c95e45e29f740b4bb7c2812dfc2468c11121326d",
+      "source_checkpoint": "5fcb351bf1cbe447e2976f33c9e5cce9f7a82aa4",
+      "group": "conformance",
+      "files_changed": 6
+    },
+    {
+      "commit": "be8649b9f305ac260d92d0b9790108358db47934",
+      "source_checkpoint": "7aeeafbf986d00a855ae367070fe56b1190ce96d",
+      "group": "conformance",
+      "files_changed": 2
+    },
+    {
+      "commit": "23e1bfc6ac6e88d2f76ab94b761f8d50060d96a7",
+      "source_checkpoint": "127fba18b3d1b94fb82511b36a440c79dc0b6456",
+      "group": "conformance",
+      "files_changed": 2
+    },
+    {
+      "commit": "61a76d6efa3a0d020d8782ff75900015ee36d1ea",
+      "source_checkpoint": "9722facfb9208dbfba66579bbcd395288b9d4d21",
+      "group": "implementation",
+      "files_changed": 2
+    },
+    {
+      "commit": "66a3649180faccfc8bdda7ec586b4bff852ee794",
+      "source_checkpoint": "9722facfb9208dbfba66579bbcd395288b9d4d21",
+      "group": "conformance",
+      "files_changed": 1
+    },
+    {
+      "commit": "503f821d5573641ef9cd4be2f73b4792938df2f3",
+      "source_checkpoint": "7601091997f1be6aec44c2246c386613723a1311",
+      "group": "implementation",
+      "files_changed": 26
+    },
+    {
+      "commit": "a2d0955c2dcdd72fe30f448b66a2b00a6f1a98c4",
+      "source_checkpoint": "7601091997f1be6aec44c2246c386613723a1311",
+      "group": "conformance",
+      "files_changed": 6
+    },
+    {
+      "commit": "f803442ead40126b1b2973df882da8a3b38e9aaa",
+      "source_checkpoint": "6cc62b7948ff3ff06a5b39ddc2778546333347d7",
+      "group": "implementation",
+      "files_changed": 6
+    },
+    {
+      "commit": "39baec6e7107ae843fee1f46025d23bda0057206",
+      "source_checkpoint": "6cc62b7948ff3ff06a5b39ddc2778546333347d7",
+      "group": "conformance",
+      "files_changed": 22
+    },
+    {
+      "commit": "a09e1a64df37d2efbef517920b792a6af25c4451",
+      "source_checkpoint": "44df57473f859dd85b6370084b22d393324c282a",
+      "group": "implementation",
+      "files_changed": 13
+    },
+    {
+      "commit": "121c0dd075af9a1a59c9ac1da2e97f38875d9f82",
+      "source_checkpoint": "44df57473f859dd85b6370084b22d393324c282a",
+      "group": "conformance",
+      "files_changed": 12
+    }
+  ]
+}
