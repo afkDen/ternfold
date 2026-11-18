@@ -372,15 +372,17 @@ static void test_check_cli(const char *exe) {
         const char *no_root[] = {exe,"check",entry,"--root",NULL};
         const char *wrong_option[] = {exe,"check",entry,"--symbol-table",root,NULL};
         write_text(helper,"pub fn one() -> Int { 1 }");
-        /* Deliberate type mismatch: this command checks names, not types. */
-        write_text(entry,"import \"helper.tfd\" as helper; pub fn library() -> Bool { helper::one() }");
+        write_text(entry,"import \"helper.tfd\" as helper; pub fn library() -> Int { helper::one() }");
         CHECK(spawn(args,CAPTURE,CAPTURE) == 0);
-        contains(output_path,"types and later phases were not checked");
+        contains(output_path,"machine scheduling and later phases were not checked");
         contains(error_path,"\"schema_version\":2");
         CHECK(spawn(args,BROKEN_PIPE,CAPTURE) == 2);
         CHECK(spawn(duplicate,CAPTURE,CAPTURE) == 2);
         CHECK(spawn(no_root,CAPTURE,CAPTURE) == 2);
         CHECK(spawn(wrong_option,CAPTURE,CAPTURE) == 2);
+        write_text(entry,"import \"helper.tfd\" as helper; pub fn library() -> Bool { helper::one() }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); equal(output_path,"");
+        contains(error_path,"\"code\":\"E302\"");
         write_text(helper,"fn one() -> Int { 1 }");
         CHECK(spawn(args,CAPTURE,CAPTURE) == 1); equal(output_path,"");
         contains(error_path,"\"code\":\"E206\""); contains(error_path,"helper.tfd");
@@ -389,6 +391,18 @@ static void test_check_cli(const char *exe) {
         CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E204\"");
         write_text(entry,"pub fn library() -> Int { absent }");
         CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E203\"");
+        write_text(entry,"pub fn main() -> List[Text] { input x: Text; output x; [x] }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 0);
+        write_text(entry,"pub fn main() -> List[Text] { input x: Int; [] }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E302\"");
+        write_text(entry,"pub fn main() -> List[Text] { output \"x\"; main() }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E208\"");
+        write_text(entry,"pub fn main() -> List[Text] { [\"x\"] } fn library() -> List[Text] { main() }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 0);
+        write_text(entry,"fn f(v: Option[Bool]) -> Bool { match v { Option::Some(true) => { true } } }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E310\"");
+        write_text(entry,"machine M(x: Unit) yields Unit rejects Unit { state a: Int = 1 div 0; next a = a; }");
+        CHECK(spawn(args,CAPTURE,CAPTURE) == 1); contains(error_path,"\"code\":\"E306\"");
         absent(table);
     }
 }
@@ -404,10 +418,19 @@ static void test_examples(const char *exe) {
     };
     size_t i; char path[PATH_CAPACITY];
     for (i = 0; i < sizeof(examples)/sizeof(examples[0]); ++i) {
+        const char *expected_check_error = NULL;
         join_path(path,"examples",examples[i]);
         CHECK(tokens(exe,path,true,true,NULL) == (strcmp(examples[i],"lexical/invalid.tfd") == 0 ? 1 : 0));
         contains(output_path,"\"schema_version\":1"); contains(output_path,"\"kind\":\"EOF\"");
         contains(error_path,"\"schema_version\":2");
+        if (strcmp(examples[i],"lexical/invalid.tfd") == 0) expected_check_error = "E101";
+        else if (strcmp(examples[i],"invalid/closure_candidate.tfd") == 0) expected_check_error = "E406";
+        else if (strcmp(examples[i],"invalid/non_bool_guard.tfd") == 0) expected_check_error = "E302";
+        else if (strcmp(examples[i],"invalid/non_exhaustive.tfd") == 0) expected_check_error = "E310";
+        const char *args[] = {exe,"check",path,"--root","examples","--diagnostics-json",NULL};
+        CHECK(spawn(args,CAPTURE,CAPTURE) == (expected_check_error == NULL ? 0 : 1));
+        if (expected_check_error != NULL) contains(error_path,expected_check_error);
+        else contains(error_path,"\"diagnostics\":[]");
     }
     CHECK(tokens(exe,"examples/lexical/complete.tfd",false,false,root) == 0);
     {

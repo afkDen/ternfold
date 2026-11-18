@@ -1,0 +1,11 @@
+fn shape_none() -> Int { len(Option::None) }
+fn shape_some() -> Int { len(Option::Some([])) }
+fn shape_machine() -> Int { len(Decision::Accept(Option::None, [])) }
+fn hidden() -> List[Int] { map(1, fn(x: Int) -> Int { true }) }
+fn ordered() -> List[Int] { map(fn() -> Int { true }, fn(x: Int) -> Bool { true }) }
+fn arity() -> List[Int] { map(fn() -> Int { true }) }
+fn named() -> List[Int] { map(items: fn() -> Int { true }, callback: fn(x: Int) -> Int { true }) }
+fn result() -> Bool { map(1, fn(x: Int) -> Int { true }) }
+fn ambiguous() -> Int { let _ = map([], len); 0 }
+fn nullary() -> Int { let _ = Option::None(fn() -> Int { true }); 0 }
+fn probe_ordered() -> List[Int] { map(if true { fn() -> Int { true } } else { fn() -> Int { 0 } }, fn(x: Int) -> Bool { true }) }
