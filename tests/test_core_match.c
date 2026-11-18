@@ -384,6 +384,67 @@ static void wide_open(TfSourceManager *manager) {
     tf_core_program_destroy(core);
 }
 
+static void dead_without_projection(const TfCoreFunction *fn, TfCoreBlockId id) {
+    const TfCoreBlock *b=tf_core_block(fn,id);
+    CHECK(b!=NULL && b->terminator.kind==TF_CORE_UNREACHABLE && b->let_count==0);
+}
+
+static TfCoreBlockId case_id(const TfCoreOperation *op, size_t tag_value) {
+    for (size_t i=0; i<op->as.switch_tag.case_count; ++i)
+        if (op->as.switch_tag.cases[i].tag==tag_value) return op->as.switch_tag.cases[i].block;
+    CHECK(false); return 0;
+}
+
+static size_t nested_facts(TfSourceManager *manager) {
+    Front f=prepare(manager,"tests/fixtures/types/core-match-facts.tfd");
+    CHECK(tf_machine_program_build(&f.machines,f.typed,100,NULL)==TF_OK);
+    CHECK(tf_diagnostic_phase_kind(tf_machine_program_phase(f.machines))==TF_DIAG_PHASE_VALID);
+    const size_t failures=failpoints(f.machines);
+    TfCoreProgram *core=NULL;
+    TfVerifiedCore *verified=NULL;
+    CHECK(tf_core_lower(&core,f.machines,NULL,NULL)==TF_OK);
+    release(f);
+    CHECK(tf_core_verify(&verified,core,NULL,NULL)==TF_OK);
+    const TfCoreProgramData *d=tf_verified_core_data(verified);
+    const TfCoreFunction *fn=find(d,"explicit_fact");
+    const TfCoreOperation *outer=last(block(fn,fn->body),TF_CORE_OP_SWITCH_TAG);
+    const TfCoreOperation *inner=last(tag(fn,outer,TF_CORE_OPTION_NONE),TF_CORE_OP_SWITCH_TAG);
+    dead_without_projection(fn,case_id(inner,TF_CORE_OPTION_SOME));
+    integer(d,tag(fn,inner,TF_CORE_OPTION_NONE),0);
+
+    fn=find(d,"default_fact");
+    outer=last(block(fn,fn->body),TF_CORE_OP_SWITCH_TAG);
+    inner=last(block(fn,outer->as.switch_tag.default_block),TF_CORE_OP_SWITCH_TAG);
+    subject(outer,fn->parameters[0].value); subject(inner,fn->parameters[0].value);
+    dead_without_projection(fn,case_id(inner,TF_CORE_OPTION_SOME));
+    integer(d,tag(fn,inner,TF_CORE_OPTION_NONE),1);
+
+    fn=find(d,"impossible_default");
+    outer=last(block(fn,fn->body),TF_CORE_OP_SWITCH_TAG);
+    inner=last(block(fn,outer->as.switch_tag.default_block),TF_CORE_OP_SWITCH_TAG);
+    dead_without_projection(fn,inner->as.switch_tag.default_block);
+    const TfCoreBlock *some=tag(fn,inner,1);
+    CHECK(payload(some,fn->parameters[0].value,1,0)==some->terminator.value);
+
+    fn=find(d,"independent_closure");
+    outer=last(block(fn,fn->body),TF_CORE_OP_SWITCH_TAG);
+    const TfCoreBlock *none=tag(fn,outer,TF_CORE_OPTION_NONE);
+    const TfCoreFunction *lifted=tf_core_function(d,let_at(none,0,TF_CORE_OP_CLOSURE)->operation.as.function);
+    CHECK(lifted!=NULL);
+    inner=last(block(lifted,lifted->body),TF_CORE_OP_SWITCH_TAG);
+    some=tag(lifted,inner,TF_CORE_OPTION_SOME);
+    CHECK(payload(some,lifted->parameters[0].value,TF_CORE_OPTION_SOME,0)==some->terminator.value);
+
+    fn=find(d,"known_bool");
+    outer=last(block(fn,fn->body),TF_CORE_OP_IF);
+    inner=last(yes(fn,outer),TF_CORE_OP_IF);
+    dead_without_projection(fn,inner->as.branch.else_block);
+    integer(d,yes(fn,inner),5);
+    tf_verified_core_destroy(verified);
+    tf_core_program_destroy(core);
+    return failures;
+}
+
 static size_t valid(TfSourceManager *manager, const char *path, bool int_only) {
     Front f=prepare(manager,path);
     const TfDiagnosticBag *bag=tf_typed_program_diagnostics(f.typed);
@@ -432,6 +493,7 @@ int main(void) {
     CHECK(tf_source_manager_create(&manager,NULL)==TF_OK);
     size_t calls=valid(manager,"tests/fixtures/types/core-match.tfd",false);
     calls+=valid(manager,"tests/fixtures/types/core-match-int-only.tfd",true);
+    calls+=nested_facts(manager);
     invalid_patterns(manager);
     wide_open(manager);
     tf_source_manager_destroy(manager);
