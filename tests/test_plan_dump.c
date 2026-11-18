@@ -1,9 +1,27 @@
 /* Independent decoded schema/round-trip assertions for machine plan JSON v1. */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "ternfold/plan_dump.h"
 #include "../src/typed_signatures.h"
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <direct.h>
+#include <process.h>
+#define MAKE_TEST_DIR(path) _mkdir(path)
+#define REMOVE_TEST_DIR(path) _rmdir(path)
+#define PLAN_TEST_PID _getpid
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define MAKE_TEST_DIR(path) mkdir(path,0700)
+#define REMOVE_TEST_DIR(path) rmdir(path)
+#define PLAN_TEST_PID getpid
+#endif
 
 static size_t checks;
 static void check(bool okay, int line, const char *expression) {
@@ -100,6 +118,25 @@ static size_t parse(Json *j, unsigned depth) {
 static void text(const Json *j,size_t id,const void *data,size_t length) {
     CHECK(id<j->count&&j->nodes[id].type=='"'&&j->nodes[id].length==length);
     CHECK(length==0||!memcmp(j->strings+j->nodes[id].offset,data,length));
+}
+/* A path uses a single scalar in [0,255] per original native byte. The
+ * generic test decoder stores UTF-8, so decode those scalars back to bytes. */
+static void path_bytes(const Json *j, size_t id, const char *expected) {
+    const Node *n = &j->nodes[id];
+    const unsigned char *bytes = j->strings+n->offset;
+    size_t i=0, at=0;
+    CHECK(n->type == '"');
+    while (i<n->length) {
+        unsigned int c = bytes[i++];
+        if (c>=128) {
+            CHECK((c==0xc2 || c==0xc3) && i<n->length);
+            CHECK((bytes[i]&0xc0u) == 0x80u);
+            c = ((c&31u)<<6)|(bytes[i++]&63u);
+        }
+        CHECK(expected[at] != '\0' && c==(unsigned char)expected[at]);
+        ++at;
+    }
+    CHECK(expected[at] == '\0');
 }
 static size_t field(const Json *j,size_t object,const char *key) {
     size_t found=j->count,n=strlen(key);
@@ -271,7 +308,7 @@ static void schema(const Fixture *f, const Json *j) {
         const TfResolvedModule *m = tf_resolution_module_at(f->resolution,i);
         members(j,object,'{',2);
         number(j,field(j,object,"id"),m->id.index);
-        string(j,field(j,object,"path"),m->source->canonical_path);
+        path_bytes(j,field(j,object,"path"),m->source->canonical_path);
     }
     members(j,machines,'[',tf_machine_program_count(f->program));
     for (size_t i=0; i<tf_machine_program_count(f->program); ++i) {
@@ -597,6 +634,58 @@ static void boundaries(void) {
     }
 }
 
+static void path_collision(void) {
+    char directory[96], one[128], two[128], first[160], second[160], entry[160];
+    const char *const source_text =
+        "import \"\\u{e9}/same.tfd\" as one; "
+        "import \"\\u{c3}\\u{a9}/same.tfd\" as two;\n";
+#ifdef _WIN32
+    /* ANSI paths are part of the SourceManager contract. The original
+     * collision uses these exact CP1252 bytes. Other ACPs run the generic
+     * byte-round-trip assertions above and report this specific fixture skip. */
+    if (GetACP() != 1252) {
+        puts("SKIP [plan CP1252 collision]: Windows ANSI code page is not 1252");
+        return;
+    }
+    const char a[] = "\xe9", b[] = "\xc3\xa9";
+#else
+    const char a[] = "\xc3\xa9", b[] = "\xc3\x83\xc2\xa9";
+#endif
+    int n = snprintf(directory,sizeof directory,"build/m07-plan-path-%ld",(long)PLAN_TEST_PID());
+    CHECK(n>0 && (size_t)n<sizeof directory);
+    n = snprintf(one,sizeof one,"%s/%s",directory,a);
+    CHECK(n>0 && (size_t)n<sizeof one);
+    n = snprintf(two,sizeof two,"%s/%s",directory,b);
+    CHECK(n>0 && (size_t)n<sizeof two);
+    n = snprintf(first,sizeof first,"%s/same.tfd",one);
+    CHECK(n>0 && (size_t)n<sizeof first);
+    n = snprintf(second,sizeof second,"%s/same.tfd",two);
+    CHECK(n>0 && (size_t)n<sizeof second);
+    n = snprintf(entry,sizeof entry,"%s/entry.tfd",directory);
+    CHECK(n>0 && (size_t)n<sizeof entry);
+    CHECK(MAKE_TEST_DIR(directory) == 0 && MAKE_TEST_DIR(one) == 0 && MAKE_TEST_DIR(two) == 0);
+    FILE *file = fopen(first,"wb");
+    CHECK(file != NULL && fputs("fn one() -> Int { 1 }\n",file)>=0 && fclose(file)==0);
+    file = fopen(second,"wb");
+    CHECK(file != NULL && fputs("fn two() -> Int { 2 }\n",file)>=0 && fclose(file)==0);
+    file = fopen(entry,"wb");
+    CHECK(file != NULL && fputs(source_text,file)>=0 && fclose(file)==0);
+    Fixture f = load(entry,100,NULL);
+    valid(&f);
+    roundtrip(&f);
+    char *output = render(f.program,true);
+    Json *j = decode(output);
+    const size_t modules = field(j,0,"modules");
+    members(j,modules,'[',3);
+    const Node *x = &j->nodes[field(j,element(j,modules,1),"path")];
+    const Node *y = &j->nodes[field(j,element(j,modules,2),"path")];
+    CHECK(x->length != y->length ||
+          memcmp(j->strings+x->offset,j->strings+y->offset,x->length) != 0);
+    free(j); free(output); destroy(f);
+    CHECK(remove(entry) == 0 && remove(first) == 0 && remove(second) == 0);
+    CHECK(REMOVE_TEST_DIR(one) == 0 && REMOVE_TEST_DIR(two) == 0 && REMOVE_TEST_DIR(directory) == 0);
+}
+
 typedef struct { bool fail; size_t attempts, live; } Allocation;
 static void *allocate(void *context, size_t size) {
     Allocation *a = context; ++a->attempts;
@@ -629,7 +718,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 1 || argc == 2);
     supplied_fixtures(argc == 2 ? argv[1] : "tests/fixtures/plan");
     contexts(); imports(argc == 2 ? argv[1] : "tests/fixtures/plan");
-    boundaries(); allocation_free();
+    boundaries(); path_collision(); allocation_free();
     printf("machine plan dump: %zu checks passed\n",checks);
     return 0;
 }
