@@ -1,0 +1,7 @@
+fn capture(z: Int, a: Int) -> Int {
+    let outer = fn(delta: Int) -> Int {
+        let inner = fn() -> Int { a - z + delta };
+        inner() + a
+    };
+    outer(10) + z
+}

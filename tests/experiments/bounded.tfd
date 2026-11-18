@@ -1,0 +1,10 @@
+import "library.tfd" as lib;
+pub fn main() -> List[Text] {
+    fold(range(0, 3), [], fn (sa: List[Text], a: Int) -> List[Text] {
+        sa ++ fold(range(0, 3), [], fn (sz: List[Text], z: Int) -> List[Text] {
+            sz ++ fold(range(-2, 3), [], fn (sd: List[Text], da: Int) -> List[Text] {
+                sd ++ for dz in range(-2, 3) { lib::report(lib::seed(a), lib::seed(z), da, dz) }
+            })
+        })
+    })
+}

@@ -1,0 +1,10 @@
+fn no_widen() -> Float { 1 }
+fn mixed_add() -> Float { 1 + 2.0 }
+fn mixed_order() -> Bool { 1 < 2.0 }
+fn mixed_equal() -> Bool { 1 == 1.0 }
+fn int_exponent() -> Int { 2 ^ 3.0 }
+fn real_exponent() -> Float { 2.0 ^ 3.0 }
+fn real_floor() -> Int { 1.0 div 2 }
+fn real_remainder() -> Int { 1 % 2.0 }
+fn dead_rhs() -> Bool { false && (2.0 ^ 1.0 == 0.0) }
+fn nonfinite() -> Float { 1e999 + 2.0 }

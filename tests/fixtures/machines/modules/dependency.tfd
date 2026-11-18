@@ -1,0 +1,5 @@
+pub machine Same(delta: Int) yields Int rejects Unit {
+    state a: Int = 1;
+    next a = a - delta;
+    emit next.a;
+}

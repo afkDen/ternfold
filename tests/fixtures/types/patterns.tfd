@@ -1,0 +1,31 @@
+fn complete(x: Option[Bool]) -> Int {
+    match x { Option::Some(true) => { 1 }, Option::Some(false) => { 2 }, Option::None => { 3 } }
+}
+fn missing(x: Option[Bool]) -> Int {
+    match x { Option::Some(true) => { 1 }, Option::None => { 3 } }
+}
+fn binder(x: Option[Bool]) -> Bool {
+    match x { Option::Some(value) => { value }, Option::None => { false } }
+}
+fn bad_arity(x: Option[Bool]) -> Int {
+    match x { Option::Some(true, false) => { 1 }, _ => { 0 } }
+}
+fn wrong_payload(x: Option[Bool]) -> Int {
+    match x { Option::Some(5) => { 1 }, _ => { 0 } }
+}
+fn wide_int(x: Int) -> Bool {
+    match x { - 9223372036854775808 => { true }, _ => { false } }
+}
+fn rounded_float(x: Float) -> Bool {
+    match x { -0.0 => { true }, 0e10 => { false }, _ => { false } }
+}
+fn open_char(x: Char) -> Bool {
+    match x { 'x' => { true } }
+}
+machine State(x: Unit) yields Char rejects Text {
+    state value: Char = 'x';
+    next value = value;
+}
+fn decision(x: Decision[State, Char, Text]) -> Int {
+    match x { Decision::Accept(machine_value, emissions) => { 0 } }
+}

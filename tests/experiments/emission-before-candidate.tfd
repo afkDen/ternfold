@@ -1,0 +1,17 @@
+machine Early(delta: Int) yields Text rejects Text {
+    state n: Int = 0;
+    next n = delta;
+
+    emit "private first";
+    emit int_text(1 div delta);
+}
+machine Later(delta: Int) yields Text rejects Text {
+    state n: Int = 0;
+    next n = 9223372036854775807 + delta;
+}
+pub fn main() -> List[Text] {
+    output "staged";
+    let early = step(Early(), 0);
+    let later = step(Later(), 1);
+    ["unreachable"]
+}

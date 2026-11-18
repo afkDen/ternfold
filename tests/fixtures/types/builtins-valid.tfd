@@ -1,0 +1,64 @@
+machine Meter(command: Option[Int]) yields Char rejects Text {
+    state count: Int = 0;
+    next count = count;
+    emit 'm';
+}
+machine Other(command: Option[Int]) yields Char rejects Text {
+    state count: Int = 0;
+    next count = count;
+    emit 'o';
+}
+fn format(x: Int) -> Text { int_text(x) }
+fn everything() -> Unit {
+    let numbers = append([], 1);
+    let flags = append([], true);
+    let optional = append([Option::None], Option::Some(1));
+    let optional_calls = append([at([], 0)], Option::Some(1));
+    let reverse = append([Option::Some(1)], Option::None);
+    let list_option: Option[List[Int]] = Option::Some([]);
+    let none: Option[Char] = Option::None;
+    let from_index: Option[Bool] = at([], 0);
+    let array: List[Int] = range(0, 2);
+    let count: Int = len(array);
+    let parse: Option[Int] = parse_int("9");
+    let integer_text: Text = int_text(1);
+    let floating: Float = int_float(1);
+    let float_option: Option[Int] = float_int(floating);
+    let floating_text: Text = float_text(floating);
+    let bool_string: Text = bool_text(true);
+    let text_length: Int = text_len("a");
+    let text_index: Option[Text] = text_at("a", 0);
+    let text_range: Option[Text] = text_slice("a", 0, 1);
+    let strings = map([], format);
+    let nested = map([[]], fn(xs: List[Int]) -> Int { len(xs) });
+    let lengths = map([[1]], len);
+    let doubles = fold([], [], fn(acc: List[Int], element: Int) -> List[Int] { append(acc, element) });
+    let folded = fold([], [1], append);
+    let choose = append(if true { [] } else { [] }, 1);
+    let show = int_text;
+    let size: fn(List[Char]) -> Int = len;
+    let mapper: fn(List[Int], fn(Int) -> Text) -> List[Text] = map;
+    let runner: fn(Meter, Option[Int]) -> Decision[Meter, Char, Text] = step;
+    let decision = step(Meter(), Option::None);
+    let accepted = Decision::Accept(Meter(), []);
+    let rejected = Decision::Reject(Meter(), "reject");
+    let _: List[Int] = numbers;
+    let _: List[Bool] = flags;
+    let _: List[Option[Int]] = optional;
+    let _: List[Option[Int]] = optional_calls;
+    let _: List[Option[Int]] = reverse;
+    let _: List[Text] = strings;
+    let _: List[Int] = nested;
+    let _: List[Int] = lengths;
+    let _: List[Int] = doubles;
+    let _: List[Int] = folded;
+    let _: List[Int] = choose;
+    let _: Text = show(1);
+    let _: Int = size(['s']);
+    let _: List[Text] = mapper([], format);
+    let _: Decision[Meter, Char, Text] = runner(Meter(), Option::None);
+    let _: Decision[Meter, Char, Text] = decision;
+    let _: Decision[Meter, Char, Text] = accepted;
+    let _: Decision[Meter, Char, Text] = rejected;
+    ()
+}

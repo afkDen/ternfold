@@ -1,0 +1,12 @@
+machine Numeric(input_value: Int) yields Float rejects Unit {
+    state minimum_div: Int = -9223372036854775808 div -1;
+    state minimum_rem: Int = -9223372036854775808 % -1;
+    state live_and: Bool = true && (0.0 ^ -1 == 0.0);
+    state live_or: Bool = false || (0.0 ^ -1 == 0.0);
+    state finite_overflow: Float = 1e308 * 2.0;
+    next minimum_div = minimum_div;
+    next minimum_rem = minimum_rem;
+    next live_and = live_and;
+    next live_or = live_or;
+    next finite_overflow = finite_overflow;
+}

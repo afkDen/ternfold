@@ -1,0 +1,5 @@
+machine Duplicate(delta: Int) yields Unit rejects Unit {
+    state a: Int = 0;
+    next a = 1 + 2;
+    next a = 3 + 4;
+}

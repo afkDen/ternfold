@@ -1,0 +1,6 @@
+fn missing(x: Option[Bool]) -> Int {
+    match x { Option::Some(true) => { 1 }, Option::None => { 2 } }
+}
+fn redundant(x: Float) -> Int {
+    match x { -0.0 => { 1 }, 0e10 => { 2 }, _ => { 3 } }
+}

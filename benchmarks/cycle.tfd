@@ -1,0 +1,6 @@
+machine Cycle(delta: Int) yields Unit rejects Unit {
+    state a: Int = 0;
+    state b: Int = 0;
+    next a = if false { next.b } else { 0 };
+    next b = next.a;
+}

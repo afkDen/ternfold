@@ -1,0 +1,4 @@
+machine Item(command: List[Item]) yields Unit rejects Unit {
+    state value: Int = 0;
+    next value = value;
+}

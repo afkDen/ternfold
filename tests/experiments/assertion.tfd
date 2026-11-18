@@ -1,0 +1,10 @@
+import "library.tfd" as lib;
+fn checked(da: Int, dz: Int) -> List[Text] {
+    match lib::compose(lib::Cell(), lib::Cell(), da, dz) {
+        lib::Joint::Accept(a, z, events) => {
+            if a.n + z.n == 2 { events } else { ["relationship reject 0 0"] }
+        },
+        lib::Joint::Reject(a, z, member, reason) => { ["child reject"] }
+    }
+}
+pub fn main() -> List[Text] { checked(1, 1) ++ checked(1, 2) }

@@ -1,0 +1,2 @@
+import "first.tfd" as first;
+import "second.tfd" as second;

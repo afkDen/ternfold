@@ -1,0 +1,16 @@
+record Pair { first: Int, second: Int }
+enum Mark { Plain, Labeled(Text) }
+
+fn add(x: Int, y: Int) -> Int { x + y }
+fn flags(test: Bool, n: Int) -> Bool { test && (10 div n > 0) }
+fn make() -> Pair { Pair(second: add(1, 2), first: add(3, 4)) }
+fn bounds() -> Int { -9223372036854775808 }
+fn mark(value: Bool) -> Mark { if value { Mark::Plain } else { Mark::Labeled("no") } }
+fn through(f: fn(Int, Int) -> Int) -> Int { f(7, 8) }
+pub fn main() -> List[Text] {
+    let p = make();
+    let _: Int = through(add);
+    let _: Int = len([p.second]);
+    for x in [p.first, p.second] { int_text(x) }
+}
+fn pure_main_is_callable() -> List[Text] { main() }

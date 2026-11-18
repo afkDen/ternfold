@@ -1,0 +1,28 @@
+record Pair { first: Int, second: Int }
+enum Case { Idle, Value(Int) }
+fn helper() -> Bool { true }
+
+machine Counter(request: Unit) yields Unit rejects Unit {
+    state min: Int = -9223372036854775808;
+    state exact: Float = -7 / 2;
+    state quotient: Int = -7 div 2;
+    state remainder: Int = -7 % 2;
+    state skipped: Bool = false && (1 div 0 == 0);
+    state empty: List[Text] = [];
+    state pair: Pair = Pair(second: 7, first: 2);
+    state comparison: Bool = Pair(first: 2, second: 7) == Pair(second: 7, first: 2);
+    state variants: List[Case] = [Case::Idle] ++ [Case::Value(2 ^ 3)];
+    state negative_power: Float = 2.0 ^ -2;
+    state zero: Int = 1 div 0;
+    state overflow: Int = 9223372036854775807 + 1;
+    state exponent: Int = 2 ^ -1;
+    state not_closed: Bool = true || helper();
+    state float_zero: Float = 1 / 0.0;
+    state text: Text = "hello " ++ "world";
+    state fault_order: Pair = Pair(second: 4 div 0, first: 9223372036854775807 + 1);
+    state arithmetic: Bool = ((-7 div 2 == -4) && (-7 % 2 == -1) && (-7 / 2 == -3.5) &&
+        (2.0 ^ -2 == 0.25) && (-0.0 == 0.0)) || (1 div 0 == 0);
+    state ordered_record: Bool =
+        Pair(first: 2, second: 7) == Pair(second: 7, first: 2) || (1 div 0 == 0);
+    next min = min;
+}

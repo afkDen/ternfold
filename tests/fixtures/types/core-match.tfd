@@ -1,0 +1,82 @@
+enum Choice { Empty, Pair(Bool, Bool), Wrapped(Option[Bool], Unit) }
+enum Payload { Pair(Int, Bool), Empty }
+enum Floating { Pair(Float, Bool) }
+
+fn once(x: Option[Option[Bool]]) -> Option[Option[Bool]] { x }
+
+fn nested(x: Option[Option[Bool]]) -> Int {
+    match once(x) {
+        Option::Some(Option::Some(true)) => { 10 },
+        Option::Some(Option::Some(false)) => { 11 },
+        Option::Some(Option::None) => { 12 },
+        Option::None => { 13 }
+    }
+}
+
+fn priority(x: Choice) -> Int {
+    match x {
+        Choice::Pair(_, true) => { 20 },
+        Choice::Pair(true, _) => { 21 },
+        Choice::Pair(_, _) => { 22 },
+        Choice::Wrapped(Option::Some(true), ()) => { 23 },
+        Choice::Empty => { 24 },
+        _ => { 25 }
+    }
+}
+
+fn mixed(x: Payload) -> Int {
+    match x {
+        Payload::Pair(-9223372036854775808, true) => { 30 },
+        Payload::Pair(- 7, _) => { 31 },
+        Payload::Pair(42, false) => { 32 },
+        Payload::Pair(number, false) => { number },
+        _ => { 34 }
+    }
+}
+
+fn floats(x: Float) -> Int {
+    match x { -1.25 => { 40 }, -0.0 => { 41 }, _ => { 42 } }
+}
+
+fn same_literal(x: Floating) -> Int {
+    match x {
+        Floating::Pair(-0.0, true) => { 43 },
+        Floating::Pair(0e10, false) => { 44 },
+        _ => { 45 }
+    }
+}
+
+fn texts(x: Text) -> Int {
+    match x { "a\u{0}b" => { 50 }, "a\u{0}c" => { 51 }, _ => { 52 } }
+}
+
+fn chars(x: Char) -> Int {
+    match x { 'a' => { 60 }, '\u{1F642}' => { 61 }, _ => { 62 } }
+}
+
+fn captured(x: Choice, shadow: Bool) -> Bool {
+    match x {
+        Choice::Pair(shadow, true) => {
+            let get = fn() -> Bool { shadow };
+            get()
+        },
+        Choice::Wrapped(Option::Some(shadow), _) => {
+            let get = fn() -> Bool { shadow };
+            get()
+        },
+        _ => { shadow }
+    }
+}
+
+fn duplicated(x: Choice) -> Bool {
+    match x {
+        Choice::Pair(true, true) => { false },
+        Choice::Wrapped(Option::None, ()) => { false },
+        whole => {
+            let get = fn() -> Choice { whole };
+            match get() { Choice::Empty => { false }, _ => { true } }
+        }
+    }
+}
+
+fn unit(x: Unit) -> Int { match x { () => { 70 } } }

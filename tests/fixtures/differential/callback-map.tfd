@@ -1,0 +1,6 @@
+import "callback-library.tfd" as library;
+
+pub fn main() -> List[Text] {
+    output "private";
+    map([0, 1], library::format)
+}

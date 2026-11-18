@@ -1,0 +1,33 @@
+machine Ordered(request: Int) yields Int rejects Text {
+    state z: Int = 0;
+    state a: Int = 1;
+    state B: Int = 2;
+    state b: Int = 3;
+    next z = next.a + next.B;
+    next b = request + z;
+    next a = request;
+    next B = next.a * 2;
+    guard next.z > 0 else "first";
+    guard b > 0 else "second";
+    emit next.z;
+    emit b;
+}
+
+machine Swap(request: Unit) yields Int rejects Text {
+    state left: Int = 1;
+    state right: Int = 2;
+    next right = left;
+    next left = right;
+    emit next.left;
+    emit next.right;
+}
+
+machine DeadBranch(request: Int) yields List[Int] rejects Text {
+    state z: Int = 0;
+    state a: Int = 0;
+    state values: List[Int] = [];
+    next a = request;
+    next values = for item in [request] { next.z + item };
+    next z = if false { next.a } else { 0 };
+    emit next.values;
+}

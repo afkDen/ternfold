@@ -1,0 +1,7 @@
+note[R001]: end
+  --> "crlf.tfd":2:1..2:1 (display 1..1) [bytes 3..3): eof
+  2 | 
+    | ^
+  ::: "crlf.tfd":1:2..2:1 (display 2..1) [bytes 1..3): newline
+  1 | x
+    |  -

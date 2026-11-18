@@ -1,0 +1,34 @@
+machine Meter(command: Option[Int]) yields Char rejects Text {
+    state count: Int = 0;
+    next count = count;
+    emit 'm';
+}
+machine Other(command: Option[Int]) yields Char rejects Text {
+    state count: Int = 0;
+    next count = count;
+    emit 'o';
+}
+fn errors() -> Unit {
+    let _ = append([1], false);
+    let _ = map([1], fn() -> Int { 0 });
+    let _ = fold([true], 0, fn(acc: Int, x: Bool) -> Bool { x });
+    let _ = int_float(1.0);
+    let _ = len();
+    let _ = range(first: 1, second: 2);
+    let _ = Option::None();
+    let _ = Option::Some;
+    let _ = fold([], [], at);
+    let _ = map([], len);
+    let _ = append([], Option::None);
+    let _ = len;
+    let _ = Option::None;
+    let _ = step(Meter(), true);
+    let _ = step(1, ());
+    let _ = Decision::Accept(Meter(), [1]);
+    let _ = Decision::Reject(Meter(), false);
+    let _ = Decision::Accept(1, []);
+    let _: Decision[Meter, Char, Text] = step(Other(), Option::None);
+    let _: fn(Meter, Int) -> Decision[Meter, Char, Text] = step;
+    let _ = append([1e999], 1);
+    ()
+}

@@ -1,0 +1,6 @@
+import "stdlib/text.tfd" as text;
+
+pub fn main() -> List[Text] {
+    let scan = text::LineScan(finished: [], current: "");
+    scan.finished
+}

@@ -1,0 +1,2 @@
+record Box { value: Option[Link] }
+enum Link { End, More(Box) }

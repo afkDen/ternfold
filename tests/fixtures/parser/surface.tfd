@@ -1,0 +1,24 @@
+import "models/x.tfd" as m;
+pub record Pair { left: Int, right: List[Option[Text]], }
+pub enum Fault { Empty, Full(Int, Text), }
+pub machine Store(change: Pair) yields Text rejects Fault {
+    state count: Int = 0;
+    next count = next.count + change.left;
+    guard if true { true } else { false } else Fault::Empty;
+    emit "accepted";
+}
+fn helper(f: fn(Int, Int) -> Int, value: Decision[Store, Text, Fault]) -> List[Text] {
+    let p = Pair(left: 1, right: []);
+    let nested = for row in range(0, 2) { for col in range(0, 2) { row + col } };
+    let closure = fn(x: Int) -> Int { x + 1 };
+    match value {
+        Decision::Accept(snapshot, messages) => { messages },
+        Decision::Reject(_, Fault::Full(-9223372036854775808, "bad")) => { ["bad"] },
+        _ => { ["other"] },
+    }
+}
+pub fn main() -> List[Text] {
+    input visitor: Text from stdin;
+    output visitor to stdout;
+    ["done"]
+}

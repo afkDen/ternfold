@@ -1,0 +1,75 @@
+record Empty {}
+record Pair { left: Int, right: Int }
+
+machine Counter(delta: Int) yields Int rejects Unit {
+    state count: Int = 0;
+    next count = count + delta;
+    guard next.count >= 0 else ();
+    emit next.count;
+}
+
+fn increment(n: Int) -> Int { n + 1 }
+fn add(a: Int, b: Int) -> Int { a + b }
+fn forward_main() -> List[Text] { main() }
+
+fn escaped(base: Int, choose: Bool) -> fn(Int) -> Int {
+    if choose {
+        match at([base], 0) {
+            Option::Some(saved) => {
+                let held = [saved, increment(saved)];
+                fn(x: Int) -> Int {
+                    fold(held, x, fn(a: Int, b: Int) -> Int { add(a, b) })
+                }
+            },
+            Option::None => { fn(x: Int) -> Int { x } }
+        }
+    } else {
+        let saved = increment(base);
+        if saved > 0 {
+            fn(x: Int) -> Int { add(saved, x) }
+        } else {
+            fn(x: Int) -> Int { x - saved }
+        }
+    }
+}
+
+pub fn main() -> List[Text] {
+    let pair = Pair(right: increment(20), left: increment(10));
+    let callbacks = for n in [1, 2] {
+        for choose in [true, false] { escaped(n, choose) }
+    };
+    let rows = for row in callbacks {
+        for callback in row { callback(increment(9)) }
+    };
+    let empty: List[Int] = for n in range(2, 2) { 1 div n };
+    let map_call: fn(List[Int], fn(Int) -> Int) -> List[Int] = map;
+    let fold_call: fn(List[Int], Int, fn(Int, Int) -> Int) -> Int = fold;
+    let step_call: fn(Counter, Int) -> Decision[Counter, Int, Unit] = step;
+    let format: fn(Int) -> Text = int_text;
+    let pick: fn(List[Empty], Int) -> Option[Empty] = at;
+    let original = Counter();
+    let accepted = step_call(original, 3);
+    let rejected = step_call(original, -1);
+    let no_empty: Option[Empty] = Option::None;
+    let units: Option[Unit] = Option::Some(());
+    [format(pair.left * 100 + pair.right),
+     bool_text(rows == [[13, 12], [15, 13]]),
+     bool_text(empty == []),
+     bool_text(Empty() == Empty()),
+     bool_text(() == ()),
+     bool_text(pick([Empty()], 0) == Option::Some(Empty())),
+     bool_text(pick([Empty()], -1) == no_empty),
+     bool_text(units == Option::Some(())),
+     bool_text(units != Option::None),
+     bool_text(accepted == Decision::Accept(step_state(), [3])),
+     bool_text(rejected == Decision::Reject(original, ())),
+     format(original.count),
+     format(fold_call(map_call([1, 2, 3], increment), 0, add))]
+}
+
+fn step_state() -> Counter {
+    match step(Counter(), 3) {
+        Decision::Accept(snapshot, _) => { snapshot },
+        Decision::Reject(snapshot, _) => { snapshot }
+    }
+}

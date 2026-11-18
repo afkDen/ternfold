@@ -1,0 +1,16 @@
+machine Numeric(input_value: Int) yields Float rejects Unit {
+    // Each wrong comparison reaches the fault in that closed initializer.
+    state powers: Bool = ((-2 ^ 2 == -4) && ((-2) ^ 2 == 4) &&
+        (2 ^ 3 ^ 2 == 512) && (0 ^ 0 == 1) && (0.0 ^ 0 == 1.0)) || (1 div 0 == 0);
+    state ratios: Bool = ((5 / 2 / 2 == 1.25) && (5 / 2.0 == 2.5) &&
+        (5.0 / 2 == 2.5) && (9007199254740993 / 9007199254740995 == 0.9999999999999996))
+        || (1 div 0 == 0);
+    state lazy: Bool = (!(false && (0.0 ^ -1 == 0.0)) &&
+        (true || (0.0 ^ -1 == 0.0))) || (1 div 0 == 0);
+    state value: Float = 0.0;
+    next lazy = lazy && (next.value >= 0.0);
+    next value = input_value / value;
+    next ratios = ratios;
+    next powers = powers;
+    emit next.value;
+}

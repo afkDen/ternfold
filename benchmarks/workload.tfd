@@ -1,0 +1,5 @@
+fn calculate(x: Int) -> Int { x * (3 + 4) * (8 div 2) + (6 * 7) }
+pub fn main() -> List[Text] {
+    let values = map(range(0, 50000), calculate);
+    [int_text(fold(values, 0, fn (total: Int, value: Int) -> Int { total + value }))]
+}

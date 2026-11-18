@@ -1,0 +1,8 @@
+pub fn main() -> List[Text] {
+    let start = 2;
+    output "private";
+    let folded = fold([-1, 0], 0, fn(total: Int, exponent: Int) -> Int {
+        if exponent == 0 { 1 div exponent } else { total + start ^ exponent }
+    });
+    [int_text(folded)]
+}

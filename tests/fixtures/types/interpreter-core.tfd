@@ -1,0 +1,31 @@
+enum Problem { Negative }
+
+machine Bin(delta: Int) yields Text rejects Problem {
+    state amount: Int = 2;
+    state doubled: Int = 4;
+    next doubled = next.amount * 2;
+    next amount = amount + delta;
+    guard next.amount >= 0 else Problem::Negative;
+    emit if next.doubled == 10 { "accepted" } else { "wrong candidate" };
+    emit if amount == 2 { "old snapshot" } else { "wrong snapshot" };
+}
+
+fn run(delta: Int) -> List[Text] {
+    match step(Bin(), delta) {
+        Decision::Accept(snapshot, lines) => { if snapshot.amount == 5 { lines } else { ["wrong"] } },
+        Decision::Reject(snapshot, Problem::Negative) => {
+            if snapshot.amount == 2 { ["rejected"] } else { ["changed"] }
+        }
+    }
+}
+
+pub fn main() -> List[Text] {
+    let offset = 3;
+    let f = fn(n: Int) -> Int { n + offset };
+    let nested = for n in [0, 1] { for m in [2] { n + m } };
+    let numbers = if (3 ^ 2 == 9 && -7 div 2 == -4 && -7 % 2 == -1 && 7 / 2 == 3.5) || 1 div 0 == 0 {
+        ["checked"]
+    } else { ["wrong"] };
+    let marks = if nested == [[2], [3]] && '\u{1F642}' != 'x' { ["a\u{0}b"] } else { ["wrong"] };
+    run(f(0)) ++ run(-3) ++ numbers ++ marks
+}

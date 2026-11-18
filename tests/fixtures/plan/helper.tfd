@@ -1,0 +1,6 @@
+pub machine Imported(request: Int) yields Int rejects Text {
+    state value: Int = 1;
+    next value = request + value;
+    guard next.value > 0 else "imported";
+    emit next.value;
+}

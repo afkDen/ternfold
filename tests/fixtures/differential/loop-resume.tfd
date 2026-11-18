@@ -1,0 +1,21 @@
+fn plus(n: Int) -> Int { n + 1 }
+fn recursively(n: Int) -> Int {
+    if n == 0 { 0 } else { 1 + recursively(n - 1) }
+}
+fn pure() -> List[Text] { main() }
+
+pub fn main() -> List[Text] {
+    let offset = 10;
+    let nested = for n in [1, 2] {
+        for m in [3, 4] {
+            let callback = fn(x: Int) -> Int { n + m + offset + x };
+            if m == 3 { callback(plus(n)) } else { recursively(m) }
+        }
+    };
+    let nothing: List[Int] = [];
+    let empty: List[Int] = for n in nothing { plus(n) };
+    let functions = for n in [1, 2] { fn(x: Int) -> Int { n + x } };
+    let results = map(functions, fn(f: fn(Int) -> Int) -> Int { f(40) });
+    [bool_text(nested == [[16, 4], [18, 4]]),
+     bool_text(empty == []), bool_text(results == [41, 42])]
+}

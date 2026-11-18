@@ -1,0 +1,6 @@
+import "stdlib/ints.tfd" as ints;
+
+pub fn main() -> List[Text] {
+    output "must-not-publish";
+    [int_text(ints::sum([-9223372036854775808, -1, 1]))]
+}

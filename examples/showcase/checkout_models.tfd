@@ -1,0 +1,115 @@
+// Ordinary public source types; importing this module performs no I/O.
+pub record Order { quantity: Int, unit_price: Int }
+pub enum StockFault { InvalidQuantity(Int), Insufficient(Int, Int) }
+pub enum WalletFault { InvalidCharge(Int), Insufficient(Int, Int) }
+
+pub machine Stock(quantity: Int) yields Text rejects StockFault {
+    state available: Int = 6;
+    state reserved: Int = 0;
+    state prior_reserved: Int = 0;
+    // Written first, but scheduled after reserved by the explicit dependency.
+    next available = 6 - next.reserved;
+    next reserved = reserved + quantity;
+    // Bare reserved always reads the old snapshot, even after its writer runs.
+    next prior_reserved = reserved;
+    guard quantity > 0 else StockFault::InvalidQuantity(quantity);
+    guard next.available >= 0 else StockFault::Insufficient(quantity, available);
+    emit "stock reserved=" ++ int_text(next.reserved)
+        ++ " from=" ++ int_text(next.prior_reserved)
+        ++ " available=" ++ int_text(next.available);
+}
+
+pub machine Wallet(charge: Int) yields Text rejects WalletFault {
+    state balance: Int = 30;
+    state spent: Int = 0;
+    state prior_spent: Int = 0;
+    next balance = 30 - next.spent;
+    next spent = spent + charge;
+    next prior_spent = spent;
+    guard charge >= 0 else WalletFault::InvalidCharge(charge);
+    guard next.balance >= 0 else WalletFault::Insufficient(charge, balance);
+    emit "wallet charged=" ++ int_text(charge)
+        ++ " from=" ++ int_text(next.prior_spent)
+        ++ " balance=" ++ int_text(next.balance);
+}
+
+pub record Checkout { stock: Stock, wallet: Wallet }
+pub enum CheckoutFault { Stock(StockFault), Wallet(WalletFault) }
+pub enum Purchase { Accepted(Checkout, List[Text]), Rejected(Checkout, CheckoutFault) }
+pub record Journal { checkout: Checkout, lines: List[Text] }
+
+// Private helper: no re-export or special transaction primitive.
+fn charge_for(order: Order) -> Int { order.quantity * order.unit_price }
+
+pub fn purchase(original: Checkout, order: Order) -> Purchase {
+    match step(original.stock, order.quantity) {
+        Decision::Reject(stock, reason) => {
+            Purchase::Rejected(original, CheckoutFault::Stock(reason))
+        },
+        Decision::Accept(stock, stock_messages) => {
+            match step(original.wallet, charge_for(order)) {
+                Decision::Reject(wallet, reason) => {
+                    // Neither the stock candidate nor its messages escape.
+                    Purchase::Rejected(original, CheckoutFault::Wallet(reason))
+                },
+                Decision::Accept(wallet, wallet_messages) => {
+                    Purchase::Accepted(Checkout(stock: stock, wallet: wallet),
+                        stock_messages ++ wallet_messages)
+                }
+            }
+        }
+    }
+}
+
+pub fn snapshot(result: Purchase) -> Checkout {
+    match result {
+        Purchase::Accepted(checkout, messages) => { checkout },
+        Purchase::Rejected(checkout, reason) => { checkout }
+    }
+}
+
+pub fn fault_text(reason: CheckoutFault) -> Text {
+    match reason {
+        CheckoutFault::Stock(fault) => {
+            match fault {
+                StockFault::InvalidQuantity(quantity) => {
+                    "Stock.InvalidQuantity(" ++ int_text(quantity) ++ ")"
+                },
+                StockFault::Insufficient(quantity, available) => {
+                    "Stock.Insufficient(" ++ int_text(quantity) ++ "," ++ int_text(available) ++ ")"
+                }
+            }
+        },
+        CheckoutFault::Wallet(fault) => {
+            match fault {
+                WalletFault::InvalidCharge(charge) => {
+                    "Wallet.InvalidCharge(" ++ int_text(charge) ++ ")"
+                },
+                WalletFault::Insufficient(charge, balance) => {
+                    "Wallet.Insufficient(" ++ int_text(charge) ++ "," ++ int_text(balance) ++ ")"
+                }
+            }
+        }
+    }
+}
+
+pub fn messages(result: Purchase) -> List[Text] {
+    match result {
+        Purchase::Accepted(checkout, lines) => { lines },
+        Purchase::Rejected(checkout, reason) => { ["rejected " ++ fault_text(reason)] }
+    }
+}
+
+pub fn describe(checkout: Checkout) -> Text {
+    "stock=" ++ int_text(checkout.stock.available)
+        ++ " reserved=" ++ int_text(checkout.stock.reserved)
+        ++ " prior_reserved=" ++ int_text(checkout.stock.prior_reserved)
+        ++ " wallet=" ++ int_text(checkout.wallet.balance)
+        ++ " spent=" ++ int_text(checkout.wallet.spent)
+        ++ " prior_spent=" ++ int_text(checkout.wallet.prior_spent)
+}
+
+pub fn advance(journal: Journal, order: Order) -> Journal {
+    let result = purchase(journal.checkout, order);
+    Journal(checkout: snapshot(result), lines: journal.lines ++ messages(result))
+}

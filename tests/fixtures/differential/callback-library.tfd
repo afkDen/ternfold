@@ -1,0 +1,4 @@
+pub fn format(n: Int) -> Text {
+    // The first element divides by zero; the second would overflow.
+    if n == 0 { /* 🙂 */ int_text(7 div n) } else { int_text(9223372036854775807 + n) }
+}

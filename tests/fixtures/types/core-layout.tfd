@@ -1,0 +1,28 @@
+record Empty {}
+enum Packet { Idle, Data(Int, Text) }
+record PacketBox { body: Packet, marker: Char }
+
+machine Feed(value: Int) yields Char rejects Text {
+    state snapshot: PacketBox = PacketBox(marker: 'x', body: Packet::Idle);
+    next snapshot = snapshot;
+    emit 'x';
+}
+
+fn pass(result: Decision[Feed, Char, Text]) -> Decision[Feed, Char, Text] { result }
+fn second(result: Decision[Feed, Char, Text]) -> Decision[Feed, Char, Text] { result }
+machine Existing(value: Unit) yields Bool rejects Unit {
+    state value_cell: List[Bool] = [];
+    next value_cell = value_cell;
+}
+fn known(result: Decision[Existing, Bool, Unit]) -> Decision[Existing, Bool, Unit] { result }
+
+// Neither of these machines is stepped or mentioned in a Decision annotation.
+machine Uncalled(value: Int) yields PacketBox rejects Text {
+    state snapshot: PacketBox = PacketBox(body: Packet::Idle, marker: 'x');
+    next snapshot = snapshot;
+    emit snapshot;
+}
+machine Quiet(value: Unit) yields Bool rejects Unit {
+    state flag: Bool = false;
+    next flag = flag;
+}

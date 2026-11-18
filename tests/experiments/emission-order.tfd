@@ -1,0 +1,18 @@
+import "library.tfd" as lib;
+pub fn main() -> List[Text] {
+    let first = lib::report(lib::Cell(), lib::Cell(), 1, 2);
+    let left = step(lib::Cell(), 1);
+    let right = step(lib::Cell(), 2);
+    let reversed = match left {
+        Decision::Accept(a, ea) => {
+            match right {
+                Decision::Accept(z, ez) => {
+                    fold(ez ++ ea, "", fn (s: Text, e: Text) -> Text { s ++ e })
+                },
+                Decision::Reject(z, reason) => { "unexpected" }
+            }
+        },
+        Decision::Reject(a, reason) => { "unexpected" }
+    };
+    [first, reversed]
+}

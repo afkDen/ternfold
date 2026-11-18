@@ -1,0 +1,1 @@
+pub record R { a: Int }

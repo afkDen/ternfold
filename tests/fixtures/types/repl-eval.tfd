@@ -1,0 +1,60 @@
+record Pair { x: Int, label: Text }
+enum Mark { Plain, Labeled(Text) }
+
+machine Bin(delta: Int) yields Int rejects Text {
+    state doubled: Int = 4;
+    state count: Int = 2;
+    next doubled = next.count * 2;
+    next count = count + delta;
+    guard next.count >= 0 else "negative";
+    guard next.count <= 10 else "large";
+    emit next.doubled;
+    emit doubled;
+}
+
+fn session_eval() -> Unit {
+    let exact = -9223372036854775808;
+    let _: Int = exact;
+    let _: Float = 1 / 2;
+    let _: Bool = true;
+    let _: Text = "a\u{0}\n\r\t\"\\\u{1f642}";
+    let _: Char = '\u{1f642}';
+    let _: Unit = ();
+    let _: Pair = Pair(label: "hi", x: 7);
+    let _: Mark = Mark::Labeled("tag");
+    let _: Mark = Mark::Plain;
+    let _: Option[Int] = at([5], 0);
+    let _: Option[Int] = at([5], 1);
+    let _: List[Int] = range(0, 15);
+    let _: fn() -> Int = fn() -> Int { exact };
+    let old = Bin();
+    let _: Decision[Bin, Int, Text] = step(old, 1);
+    let _: Decision[Bin, Int, Text] = step(old, -3);
+    let _: Bin = old;
+    let _: Unit = { let nested = 42; () };
+    let text = "0123456789";
+    let twice = text ++ text;
+    let quarter = twice ++ twice;
+    let half = quarter ++ quarter;
+    let long = half ++ half;
+    let _: Text = long;
+    let _: List[List[List[List[List[List[List[Int]]]]]]] = [[[[[[[0]]]]]]];
+    let wide = for i in range(0, 13) { long };
+    let _: List[List[Text]] = [wide, wide, wide, wide];
+    ()
+}
+
+fn session_fault() -> Unit {
+    let _: Int = 27;
+    let _: Int = 1 div 0;
+    ()
+}
+
+fn takes_argument(x: Unit) -> Unit { let _: Unit = x; () }
+fn non_unit() -> Int { let n = 1; n }
+
+pub fn main() -> List[Text] {
+    input line: Text from stdin;
+    output "main:" ++ line to stdout;
+    ["done"]
+}

@@ -1,0 +1,44 @@
+enum Three { A, B(Int), C }
+
+fn explicit_fact(x: Option[Int]) -> Int {
+    match x {
+        Option::None => {
+            match x { Option::Some(n) => { n }, Option::None => { 0 } }
+        },
+        Option::Some(n) => { n }
+    }
+}
+
+fn default_fact(x: Option[Int]) -> Int {
+    match x {
+        Option::Some(n) => { n },
+        alias => {
+            match alias { Option::Some(n) => { n }, Option::None => { 1 } }
+        }
+    }
+}
+
+fn impossible_default(x: Three) -> Int {
+    match x {
+        Three::A => { 2 },
+        _ => {
+            match x { Three::B(n) => { n }, Three::C => { 3 }, _ => { 0 div 0 } }
+        }
+    }
+}
+
+fn independent_closure(x: Option[Int]) -> Int {
+    match x {
+        Option::None => {
+            let take = fn(own: Option[Int]) -> Int {
+                match own { Option::Some(n) => { n }, Option::None => { 0 } }
+            };
+            take(Option::Some(7))
+        },
+        Option::Some(n) => { n }
+    }
+}
+
+fn known_bool(x: Bool) -> Int {
+    if x { match x { false => { 0 div 0 }, true => { 5 } } } else { 6 }
+}

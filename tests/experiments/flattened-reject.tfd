@@ -1,0 +1,14 @@
+machine Flat(delta: Int) yields Text rejects Text {
+    state a: Int = 0;
+    state z: Int = 0;
+    next a = delta;
+    next z = delta;
+    guard false else "reject";
+    emit int_text(1 div delta);
+}
+pub fn main() -> List[Text] {
+    match step(Flat(), 0) {
+        Decision::Reject(old, reason) => { [reason] },
+        Decision::Accept(candidate, events) => { events }
+    }
+}
