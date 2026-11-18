@@ -1,0 +1,29 @@
+enum Failure { Bad(Int), Other }
+machine Ordered(delta: Int) yields Int rejects Failure {
+    state z: Int = 0;
+    state b: Int = 0;
+    state B: Int = 0;
+    state a: Int = 0;
+    next z = if false { next.b } else { next.B + next.B };
+    next b = b + delta;
+    next B = next.a;
+    next a = a;
+    guard next.z >= z else Failure::Bad(next.a);
+    guard delta >= 0 else Failure::Other;
+    emit next.b;
+    emit z;
+}
+machine Swap(input_value: Int) yields Int rejects Unit {
+    state left: Int = 1;
+    state right: Int = 2;
+    next right = left;
+    next left = right;
+    emit next.left;
+}
+machine Nested(delta: Int) yields List[Int] rejects Unit {
+    state left: Int = 0;
+    state right: Int = 0;
+    next left = { let xs = for item in [delta] { next.right + item }; len(xs) };
+    next right = { let f = fn () -> Int { right + delta }; f() };
+    emit for item in [next.left] { item + delta };
+}

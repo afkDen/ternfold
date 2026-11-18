@@ -374,7 +374,7 @@ static void test_check_cli(const char *exe) {
         write_text(helper,"pub fn one() -> Int { 1 }");
         write_text(entry,"import \"helper.tfd\" as helper; pub fn library() -> Int { helper::one() }");
         CHECK(spawn(args,CAPTURE,CAPTURE) == 0);
-        contains(output_path,"machine scheduling and later phases were not checked");
+        contains(output_path,"Frontend checks succeeded");
         contains(error_path,"\"schema_version\":2");
         CHECK(spawn(args,BROKEN_PIPE,CAPTURE) == 2);
         CHECK(spawn(duplicate,CAPTURE,CAPTURE) == 2);
@@ -427,6 +427,9 @@ static void test_examples(const char *exe) {
         else if (strcmp(examples[i],"invalid/closure_candidate.tfd") == 0) expected_check_error = "E406";
         else if (strcmp(examples[i],"invalid/non_bool_guard.tfd") == 0) expected_check_error = "E302";
         else if (strcmp(examples[i],"invalid/non_exhaustive.tfd") == 0) expected_check_error = "E310";
+        else if (strcmp(examples[i],"invalid/candidate_cycle.tfd") == 0) expected_check_error = "E404";
+        else if (strcmp(examples[i],"invalid/duplicate_writer.tfd") == 0) expected_check_error = "E402";
+        else if (strcmp(examples[i],"invalid/missing_writer.tfd") == 0) expected_check_error = "E401";
         const char *args[] = {exe,"check",path,"--root","examples","--diagnostics-json",NULL};
         CHECK(spawn(args,CAPTURE,CAPTURE) == (expected_check_error == NULL ? 0 : 1));
         if (expected_check_error != NULL) contains(error_path,expected_check_error);
@@ -437,6 +440,60 @@ static void test_examples(const char *exe) {
         char table[PATH_CAPACITY]; char *golden = read_text("tests/fixtures/lexer/Symbol Table.txt");
         join_path(table,root,"Symbol Table.txt"); equal(table,golden); free(golden); CHECK(remove(table) == 0);
     }
+}
+static void test_plan_cli(const char *exe) {
+    char path[PATH_CAPACITY], table[PATH_CAPACITY];
+    const char *text_args[] = {exe,"plan","tests/fixtures/plan/ordered.tfd",NULL};
+    const char *json_args[] = {exe,"plan","tests/fixtures/plan/ordered.tfd","--json","--diagnostics-json",NULL};
+    const char *permuted[] = {exe,"plan","tests/fixtures/plan/permuted.tfd","--root","tests/fixtures/plan",NULL};
+    const char *bad_option[] = {exe,"plan","tests/fixtures/plan/ordered.tfd","--symbol-table",root,NULL};
+    const char *duplicate[] = {exe,"plan","tests/fixtures/plan/ordered.tfd","--json","--json",NULL};
+    const char *check_json[] = {exe,"check","tests/fixtures/plan/ordered.tfd","--json",NULL};
+    const char *errors[] = {exe,"plan",path,"--diagnostics-json",NULL};
+    char *first;
+    join_path(path,root,"plan errors.tfd");
+    join_path(table,root,"Symbol Table.txt");
+    CHECK(spawn(text_args,CAPTURE,CAPTURE) == 0);
+    contains(output_path,"guards are runtime conditions");
+    contains(output_path,"schedule: a B b z");
+    contains(output_path,"schedule: left right");
+    contains(output_path,"schedule: a z values");
+    contains(output_path,"dependency a -> z");
+    contains(output_path,"candidate context=writer");
+    contains(output_path,"old context=writer");
+    contains(output_path,"input context=writer");
+    contains(output_path,"guard 0 predicate=");
+    contains(output_path,"reject-on-false=");
+    contains(output_path,"emission 1 expression=");
+    CHECK(spawn(json_args,CAPTURE,CAPTURE) == 0);
+    contains(output_path,"\"schema_version\":1");
+    contains(output_path,"\"guards_proven\":false");
+    contains(output_path,"\"schedule\":[1,2,3,0]");
+    contains(error_path,"\"diagnostics\":[]");
+    first = read_text(output_path);
+    CHECK(spawn(json_args,CAPTURE,CAPTURE) == 0);
+    equal(output_path,first);
+    free(first);
+    CHECK(spawn(permuted,CAPTURE,CAPTURE) == 0);
+    contains(output_path,"schedule: a B b z");
+    CHECK(spawn(json_args,BROKEN_PIPE,CAPTURE) == 2);
+    CHECK(spawn(bad_option,CAPTURE,CAPTURE) == 2);
+    CHECK(spawn(duplicate,CAPTURE,CAPTURE) == 2);
+    CHECK(spawn(check_json,CAPTURE,CAPTURE) == 2);
+    write_text(path,"machine M(x: Unit) yields Unit rejects Unit { state a: Int = 0; next a = next.a; }");
+    CHECK(spawn(errors,CAPTURE,CAPTURE) == 1);
+    equal(output_path,""); contains(error_path,"\"code\":\"E404\"");
+    CHECK(spawn(errors,CAPTURE,BROKEN_PIPE) == 2);
+    write_text(path,"machine M(x: Unit) yields Unit rejects Unit { state a: Int = 0; state b: Int = 0; next a = a; }");
+    CHECK(spawn(errors,CAPTURE,CAPTURE) == 1);
+    equal(output_path,""); contains(error_path,"\"code\":\"E401\"");
+    write_text(path,"machine M(x: Unit) yields Unit rejects Unit { state a: Int = 0; next a = 0; next a = 1; }");
+    CHECK(spawn(errors,CAPTURE,CAPTURE) == 1);
+    equal(output_path,""); contains(error_path,"\"code\":\"E402\"");
+    write_text(path,"fn library() -> Unit { () }");
+    CHECK(spawn(errors,CAPTURE,CAPTURE) == 0);
+    contains(output_path,"Machine plan;");
+    absent(table);
 }
 static void test_ast_cli(const char *exe) {
     char path[PATH_CAPACITY], table[PATH_CAPACITY];
@@ -520,7 +577,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 2); setup();
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
     test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
-    test_ast_cli(argv[1]); test_check_cli(argv[1]);
+    test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]);
     (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
     return 0;
 }

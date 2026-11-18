@@ -1,0 +1,14 @@
+machine Ordered(request: Int) yields Int rejects Text {
+    state z: Int = 0;
+    state a: Int = 1;
+    state B: Int = 2;
+    state b: Int = 3;
+    next B = next.a * 2;
+    next a = request;
+    next b = request + z;
+    next z = next.a + next.B;
+    guard next.z > 0 else "first";
+    guard b > 0 else "second";
+    emit next.z;
+    emit b;
+}

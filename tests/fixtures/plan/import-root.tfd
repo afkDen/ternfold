@@ -1,0 +1,10 @@
+import "helper.tfd" as helper;
+
+fn imported() -> helper::Imported { helper::Imported() }
+
+machine Local(request: Int) yields Int rejects Text {
+    state value: Int = 0;
+    next value = request + value;
+    guard next.value >= 0 else "local";
+    emit next.value;
+}
