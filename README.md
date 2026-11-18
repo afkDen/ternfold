@@ -27,9 +27,16 @@ pub fn main() -> List[Text] {
 
 ## Build and run
 
+Get the source or the ready-to-run Windows x64 CLI from
+[Releases](https://github.com/afkDen/ternfold/releases). The CLI bundle can
+interpret programs without a C toolchain. Native builds use the toolchain
+and the runtime sources from the source bundle.
+
 The verified setup is Windows x64, PowerShell 7 and LLVM-MinGW Clang 23.1.4
 (UCRT). Download the toolchain once or point the build script at an existing
 installation. No network connection is needed to build with that installation.
+Run `./scripts/windows-toolchain.ps1` to download the pinned toolchain and
+check its SHA-256.
 
 ```powershell
 $cc = 'C:/toolchain/bin/clang.exe'

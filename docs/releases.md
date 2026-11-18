@@ -9,7 +9,9 @@ the strict and sanitizer jobs, tests an optimized compiler from a fresh
 source ZIP, then uploads the source and Windows x64 command-line bundles
 with `SHA256SUMS.txt`. A failed gate leaves the release unpublished.
 
-To produce the same assets locally after creating a tag:
+To produce the same assets locally after creating a tag, use a short checkout
+path such as `C:/work/ternfold`. The test suite creates nested paths, which can
+exceed Windows path limits in a deep checkout.
 
 ```powershell
 $cc = './toolchain/bin/clang.exe'
