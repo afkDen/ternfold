@@ -15,7 +15,8 @@ typedef enum {
 /* Borrows the immutable source and uses its allocator for scratch storage.
  * A complete classification does not imply validity. Send complete units to
  * the ordinary frontend, including EXPRESSION for a source-encoding error.
- * This is a continuation heuristic, not a grammar or wrapper validator.
+ * Incomplete syntax is determined by the ordinary grammar's EOF diagnostics;
+ * a later checked AST shape check still guards assembly of a session turn.
  * Include the physical line ending, if any, in the source snapshot. An open
  * quote at byte EOF may accept more bytes; one cut off by a newline cannot.
  */

@@ -17,18 +17,6 @@ static TfTokenKind expected_close(TfTokenKind kind) {
     }
 }
 
-static bool wants_operand(TfTokenKind kind) {
-    switch (kind) {
-        case TF_MINUS: case TF_BANG:
-        case TF_PLUS: case TF_STAR: case TF_SLASH: case TF_DIV: case TF_PERCENT:
-        case TF_CARET: case TF_PLUS_PLUS: case TF_EQUAL_EQUAL: case TF_BANG_EQUAL:
-        case TF_LESS: case TF_LESS_EQUAL: case TF_GREATER: case TF_GREATER_EQUAL:
-        case TF_AND_AND: case TF_OR_OR: case TF_DOT: case TF_DOUBLE_COLON:
-            return true;
-        default: return false;
-    }
-}
-
 /* E103/E105 conflate unclosed and malformed closed literals. If the last
  * byte could be the closing quote, let the lexer decide whether the diagnosed
  * token absorbs one more ordinary byte. No escape decoding is done here. */
@@ -69,11 +57,11 @@ static TfStatus quote_at_eof(const TfToken *token, bool *open) {
 TfReplUnitKind tf_repl_classify(const TfSource *source) {
     TfLexResult lex;
     TfReplUnitKind result = TF_REPL_UNIT_EXPRESSION;
-    TfTokenKind head[3] = {TF_EOF, TF_EOF, TF_EOF}, last = TF_EOF;
+    TfTokenKind head[2] = {TF_EOF, TF_EOF};
     void *stack = NULL;
     size_t capacity = 0, depth = 0, head_count = 0;
     const TfToken *quote = NULL;
-    bool hard_error = false, open_comment = false, semicolon = false, body = false;
+    bool hard_error = false, open_comment = false;
 
     if (source == NULL) return TF_REPL_UNIT_HOST_ERROR;
     if (!source->valid)
@@ -89,7 +77,6 @@ TfReplUnitKind tf_repl_classify(const TfSource *source) {
                 continue;
             }
             if (head_count < sizeof head / sizeof head[0]) head[head_count++] = kind;
-            last = kind;
             if (hard_error) continue;
             if (kind == TF_INVALID) {
                 if ((token->error == TF_E103 || token->error == TF_E105) &&
@@ -108,12 +95,9 @@ TfReplUnitKind tf_repl_classify(const TfSource *source) {
             } else if (kind == TF_RPAREN || kind == TF_RBRACKET || kind == TF_RBRACE) {
                 if (depth == 0 || ((TfTokenKind *)stack)[depth - 1] != kind)
                     hard_error = true;
-                else if (--depth == 0 && kind == TF_RBRACE)
-                    body = true;
+                else --depth;
             } else if (kind == TF_BLOCK_CLOSE) {
                 hard_error = true;
-            } else if (kind == TF_SEMICOLON && depth == 0) {
-                semicolon = true;
             }
         }
     } else {
@@ -137,16 +121,7 @@ TfReplUnitKind tf_repl_classify(const TfSource *source) {
         goto done; /* Closed malformed quotes go straight to diagnostics. */
     }
     if (!hard_error) {
-        size_t decl = head[0] == TF_PUB ? 1u : 0u;
-        bool needs_body = declaration_head(head[decl]) &&
-            (head[decl + 1] == TF_IDENT || head[decl + 1] == TF_EOF ||
-             (decl == 0 && head[0] == TF_FN && head[1] == TF_LPAREN));
-        if (open_comment || depth != 0 ||
-            (!semicolon && (head[0] == TF_LET || head[0] == TF_IMPORT ||
-                 (head[0] == TF_PUB && head[1] == TF_EOF) || (needs_body && !body))) ||
-            (!semicolon && wants_operand(last) &&
-                 (head_count > 1 || last == TF_MINUS || last == TF_BANG)))
-            result = TF_REPL_UNIT_INCOMPLETE;
+        if (open_comment) result = TF_REPL_UNIT_INCOMPLETE;
         else if (result!=TF_REPL_UNIT_EMPTY) {
             const TfReplParseKind syntax=result==TF_REPL_UNIT_DECLARATION ? TF_REPL_PARSE_MODULE :
                 result==TF_REPL_UNIT_BINDING ? TF_REPL_PARSE_LET : TF_REPL_PARSE_EXPRESSION;

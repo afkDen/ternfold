@@ -18,7 +18,8 @@
 /* The session holds source, never a pointer into a finished VM arena. User
  * submissions have no side effects outside a designated host entry, so
  * replaying the immutable binding prefix preserves their values. */
-enum { TURN_BYTES=64*1024, SESSION_BYTES=1024*1024, CACHE_BYTES=64*1024*1024 };
+enum { TURN_BYTES=64*1024, TURN_SCAN_BYTES=32*1024*1024, SESSION_BYTES=1024*1024,
+       CACHE_BYTES=64*1024*1024 };
 typedef struct { char *data; size_t length,capacity; } Buffer;
 typedef enum { DECLARATION, BINDING, EXPRESSION, TYPE_QUERY, PLAN_QUERY } TurnKind;
 typedef struct {
@@ -217,7 +218,28 @@ static bool format_type(Buffer *out,const Pipeline *p,TfConcreteTypeId id,unsign
             put(out,", ") && format_type(out,p,t->as.decision.rejection,depth+1) && put(out,"]");
     case TF_CONCRETE_RECORD: case TF_CONCRETE_ENUM: case TF_CONCRETE_MACHINE: {
         const TfResolvedType *nominal=tf_resolution_type(p->resolution,t->as.nominal);
-        return nominal!=NULL && append(out,nominal->name.data,nominal->name.length,SESSION_BYTES);
+        if (nominal==NULL) return false;
+        const TfModuleId owner={p->resolution,t->as.nominal.module_index};
+        const TfResolvedModule *module=tf_resolution_module(p->resolution,owner);
+        if (module==NULL) return false;
+        if (!module->is_root) {
+            if (!put(out,"\"")) return false;
+            const unsigned char *path=(const unsigned char *)module->relative_path;
+            for (size_t i=0;path[i]!='\0';++i) {
+                if (i==128) { if (!put(out,"...")) return false; break; }
+                if (path[i]>=32 && path[i]<=126 && path[i]!='"' && path[i]!='\\') {
+                    if (!append(out,path+i,1,SESSION_BYTES)) return false;
+                } else {
+                    char escape[5];
+                    if (snprintf(escape,sizeof escape,"\\x%02x",(unsigned)path[i])!=4 ||
+                        !put(out,escape)) return false;
+                }
+            }
+            if (!put(out,"\"::")) return false;
+        }
+        const size_t length=nominal->name.length>128 ? 128 : nominal->name.length;
+        return append(out,nominal->name.data,length,SESSION_BYTES) &&
+               (length==nominal->name.length || put(out,"..."));
     }
     case TF_CONCRETE_FUNCTION:
         if (!put(out,"fn(")) return false;
@@ -367,6 +389,12 @@ static bool horizontal(char ch) { return ch==' ' || ch=='\t'; }
 static bool command_is(const char *start,size_t n,const char *name) {
     return n==strlen(name) && memcmp(start,name,n)==0;
 }
+static bool line_command(const Buffer *line,const char *name) {
+    size_t start=0,end=line->length;
+    while (start<end && horizontal(line->data[start])) ++start;
+    while (end>start && (horizontal(line->data[end-1]) || line->data[end-1]=='\r' || line->data[end-1]=='\n')) --end;
+    return command_is(line->data+start,end-start,name);
+}
 /* 0 means an ordinary source line; 1 means a handled command; 2 is quit. */
 static int command(Session *s,Buffer *line,const char *root,FILE *out,FILE *err) {
     size_t start=0;
@@ -383,8 +411,10 @@ static int command(Session *s,Buffer *line,const char *root,FILE *out,FILE *err)
     const size_t count=split-start;
     const char *name=line->data+start;
     if (command_is(name,count,":quit") && arg==end) return 2;
+    if (command_is(name,count,":cancel") && arg==end)
+        return message(out,"cancelled\n") ? 1 : -1;
     if (command_is(name,count,":help") && arg==end)
-        return message(out,":help  :quit  :reset  :load FILE  :type EXPR  :plan\n") ? 1 : -1;
+        return message(out,":help  :quit  :cancel  :reset  :load FILE  :type EXPR  :plan\n") ? 1 : -1;
     if (command_is(name,count,":reset") && arg==end) {
         Session next={0};
         if (!session_create(&next))
@@ -409,6 +439,7 @@ static int command(Session *s,Buffer *line,const char *root,FILE *out,FILE *err)
 int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
     Session session={0};
     Buffer line={0}, pending={0};
+    size_t scanned=0;
     int status=2;
     if (!session_create(&session)) goto done;
     for (;;) {
@@ -420,8 +451,14 @@ int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
             status=0; break;
         }
         if (next==2 || line.length>TURN_BYTES-pending.length) {
-            pending.length=0;
+            pending.length=0; scanned=0;
             if (!message(err,"repl: unit exceeds 64 KiB\n")) goto done;
+            continue;
+        }
+        if (pending.length!=0 && line_command(&line,":quit")) { status=0; break; }
+        if (pending.length!=0 && line_command(&line,":cancel")) {
+            pending.length=0; scanned=0;
+            if (!message(out,"cancelled\n")) goto done;
             continue;
         }
         if (pending.length==0) {
@@ -431,6 +468,12 @@ int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
             if (handled==1) continue;
         }
         if (!append(&pending,line.data,line.length,TURN_BYTES)) goto done;
+        if (pending.length>TURN_SCAN_BYTES-scanned) {
+            pending.length=0; scanned=0;
+            if (!message(err,"repl: multiline analysis budget exceeded\n")) goto done;
+            continue;
+        }
+        scanned+=pending.length;
         TfSource source={0};
         const TfStatus read=tf_source_init(&source,"<repl>",pending.data,pending.length,NULL);
         const TfReplUnitKind classified=read==TF_HOST_ERROR ? TF_REPL_UNIT_HOST_ERROR : tf_repl_classify(&source);
@@ -443,7 +486,7 @@ int tf_repl(FILE *in,FILE *out,FILE *err,const char *root,bool prompt) {
                                 classified==TF_REPL_UNIT_BINDING ? BINDING : EXPRESSION;
             if (run_turn(&session,&pending,kind,root,out,err)<0) goto done;
         }
-        pending.length=0;
+        pending.length=0; scanned=0;
     }
 done:
     session_destroy(&session); buffer_destroy(&line); buffer_destroy(&pending);
