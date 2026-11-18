@@ -25,7 +25,7 @@
 
 enum { PATH_CAPACITY = 4096, CHILD_TIMEOUT_MS = 15000 };
 typedef enum { CAPTURE, BROKEN_PIPE } StreamMode;
-static size_t checks, cases;
+static size_t checks, cases, example_cases;
 static char root[PATH_CAPACITY], output_path[PATH_CAPACITY], error_path[PATH_CAPACITY];
 static void check(bool okay, const char *expression, int line) {
     ++checks;
@@ -409,15 +409,17 @@ static void test_check_cli(const char *exe) {
 static void test_examples(const char *exe) {
     static const char *const examples[] = {
         "boundaries/candidate_fault.tfd","boundaries/checked_division.tfd","boundaries/minimum_overflow.tfd",
-        "course/automata.tfd","course/main_io.tfd","course/operator_inventory.tfd",
+        "course/automata.tfd","course/main_io.tfd","course/operator_inventory.tfd","course/precedence_bindings.tfd",
         "features/dependency_order.tfd","features/fold_and_closure.tfd","features/guard_short_circuit.tfd",
         "features/nested_patterns.tfd","features/snapshot_swap.tfd","features/unicode.tfd",
         "intro/counter.tfd","intro/hello.tfd","invalid/candidate_cycle.tfd","invalid/closure_candidate.tfd",
         "invalid/duplicate_writer.tfd","invalid/missing_writer.tfd","invalid/non_bool_guard.tfd","invalid/non_exhaustive.tfd",
-        "lexical/complete.tfd","lexical/invalid.tfd","showcase/branching_inventory.tfd","showcase/models/shelf.tfd"
+        "lexical/complete.tfd","lexical/invalid.tfd","showcase/branching_inventory.tfd",
+        "showcase/checkout.tfd","showcase/checkout_models.tfd","showcase/models/shelf.tfd"
     };
     size_t i; char path[PATH_CAPACITY];
     for (i = 0; i < sizeof(examples)/sizeof(examples[0]); ++i) {
+        ++example_cases;
         const char *expected_check_error = NULL;
         join_path(path,"examples",examples[i]);
         CHECK(tokens(exe,path,true,true,NULL) == (strcmp(examples[i],"lexical/invalid.tfd") == 0 ? 1 : 0));
@@ -544,6 +546,8 @@ static void test_run_cli(const char *exe) {
         RUN("features/nested_patterns.tfd","on\nmissing\n"), RUN("features/unicode.tfd","3\nNUL follows: \0end\n"),
         RUN("boundaries/checked_division.tfd","-3\n-1\n1\n"),
         RUN("course/automata.tfd","Ternfold\n-3\n"), RUN("course/operator_inventory.tfd","3.5e0\n3\n1\n8\ntrue\n"),
+        RUN("course/precedence_bindings.tfd",
+            "-4\n4\n512\n7\n20\n2.0e0\ntrue\ntrue\n19\n5\nold=10\nproposed=13\n26\n10\n"),
         RUN("showcase/branching_inventory.tfd","Ternfold: inspect a change before accepting it\naccepted count=7\n"
             "free=3\nrejected capacity; count=7\noriginal still=3\naccepted count=4\nfree=6\n"),
         {"examples/boundaries/candidate_fault.tfd","",0,"R002"},
@@ -674,6 +678,7 @@ int main(int argc, char **argv) {
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
     test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
     test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]); test_core_cli(argv[1]); test_run_cli(argv[1]);
-    (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
+    (void)printf("tokens CLI: %zu checks passed, %zu token invocations, %zu compiler examples\nfixtures: %s\n",
+                 checks,cases,example_cases,root);
     return 0;
 }

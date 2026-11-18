@@ -1,0 +1,5 @@
+import "stdlib/ints.tfd" as ints;
+
+pub fn main() -> List[Text] {
+    [int_text(ints::sum(["1"]))]
+}

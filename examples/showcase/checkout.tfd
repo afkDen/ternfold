@@ -1,0 +1,34 @@
+import "checkout_models.tfd" as shop;
+
+fn rejection(label: Text, result: shop::Purchase) -> List[Text] {
+    match result {
+        shop::Purchase::Rejected(checkout, reason) => {
+            [label ++ ": " ++ shop::fault_text(reason), "retained " ++ shop::describe(checkout)]
+        },
+        shop::Purchase::Accepted(checkout, messages) => { [label ++ ": UNEXPECTED acceptance"] }
+    }
+}
+
+pub fn main() -> List[Text] {
+    let original = shop::Checkout(stock: shop::Stock(), wallet: shop::Wallet());
+    let accepted = shop::purchase(original, shop::Order(quantity: 2, unit_price: 5));
+    let after = shop::snapshot(accepted);
+    // Stock accepts one more; wallet rejects 25 against the remaining 20.
+    let second_reject = shop::purchase(after, shop::Order(quantity: 1, unit_price: 25));
+    // Stock rejects before the wallet proposal is evaluated.
+    let first_reject = shop::purchase(after, shop::Order(quantity: 5, unit_price: 1));
+    let zero = shop::purchase(original, shop::Order(quantity: 0, unit_price: 5));
+    let events = [shop::Order(quantity: 2, unit_price: 5),
+        shop::Order(quantity: 1, unit_price: 25), shop::Order(quantity: 4, unit_price: 5)];
+    let journal = fold(events, shop::Journal(checkout: original, lines: []), shop::advance);
+    let branch = shop::purchase(original, shop::Order(quantity: 1, unit_price: 3));
+    ["Checkout: reserve stock, then charge wallet", "original " ++ shop::describe(original), "both accept"]
+        ++ shop::messages(accepted) ++ ["after " ++ shop::describe(after)]
+        ++ rejection("second rejects", second_reject)
+        ++ rejection("first rejects", first_reject)
+        ++ rejection("zero rejects", zero)
+        ++ ["fold: accept, wallet reject, exact exhaustion"] ++ journal.lines
+        ++ ["folded " ++ shop::describe(journal.checkout), "independent branch from original"]
+        ++ shop::messages(branch) ++ ["branch " ++ shop::describe(shop::snapshot(branch)),
+            "original still " ++ shop::describe(original)]
+}

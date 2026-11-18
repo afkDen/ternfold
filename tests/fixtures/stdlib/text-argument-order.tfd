@@ -1,0 +1,6 @@
+import "stdlib/text.tfd" as text;
+
+pub fn main() -> List[Text] {
+    output "must-not-publish";
+    [text::join([int_text(1 div 0)], int_text(9223372036854775807 + 1))]
+}

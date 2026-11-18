@@ -1,0 +1,7 @@
+import "stdlib/ints.tfd" as ints;
+
+pub fn main() -> List[Text] {
+    output "must-not-publish";
+    let result = ints::summary([9223372036854775807, 1, -1]);
+    [bool_text(result == Option::None)]
+}

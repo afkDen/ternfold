@@ -38,6 +38,7 @@ static char work[PATH_CAP], out[PATH_CAP], err[PATH_CAP], input[PATH_CAP], nativ
 } } while (0)
 #define FIX "tests/fixtures/differential/"
 #define M09 "tests/fixtures/types/"
+#define LIB "tests/fixtures/stdlib/"
 #define LF_OK "{\"schema_version\":2,\"diagnostics\":[],\"suppressed\":0,\"has_errors\":false}\n"
 
 typedef struct { char *data; size_t length; } Bytes;
@@ -48,7 +49,7 @@ typedef struct {
     size_t stdin_size;
     const char *code, *origin_file, *context;
     size_t origin_offset, origin_size;
-    bool bad_input;
+    bool bad_input, staged_library;
 } Case;
 
 #define OK(path, bytes) {.source=path,.output=bytes,.output_size=sizeof(bytes)-1}
@@ -74,6 +75,8 @@ static const Case cases[] = {
     OK("examples/course/automata.tfd","Ternfold\n-3\n"),
     IO("examples/course/main_io.tfd","Hello Ada\n26\n-3\n","Ada\r\nextra\n"),
     OK("examples/course/operator_inventory.tfd","3.5e0\n3\n1\n8\ntrue\n"),
+    OK("examples/course/precedence_bindings.tfd",
+       "-4\n4\n512\n7\n20\n2.0e0\ntrue\ntrue\n19\n5\nold=10\nproposed=13\n26\n10\n"),
     OK("examples/showcase/branching_inventory.tfd",
        "Ternfold: inspect a change before accepting it\naccepted count=7\nfree=3\n"
        "rejected capacity; count=7\noriginal still=3\naccepted count=4\nfree=6\n"),
@@ -108,8 +111,34 @@ static const Case cases[] = {
     FAULT(FIX "backend-edge-record-overflow-first.tfd","R001",NULL,
           "9223372036854775807 + 1",20,"+"),
     FAULT(FIX "callback-map.tfd","R002",FIX "callback-library.tfd","7 div n",2,"div"),
-    FAULT(FIX "callback-fold.tfd","R005",NULL,"start ^ exponent",6,"^")
+    FAULT(FIX "callback-fold.tfd","R005",NULL,"start ^ exponent",6,"^"),
+#define LIB_OK(path, text) {.source=LIB path,.output=text,.output_size=sizeof(text)-1,.staged_library=true}
+#define LIB_FAULT(path, fault, file, anchor, offset, spelling) \
+    {.source=LIB path,.output="",.code=fault,.origin_file=file,.context=anchor, \
+     .origin_offset=offset,.origin_size=sizeof(spelling)-1,.staged_library=true}
+    LIB_OK("text-helpers.tfd",
+        "join-empty=\njoin-one=\xf0\x9f\x99\x82\0\xc3\xb1\n"
+        "join-many=|one||\xf0\x9f\x99\x82\0\xc3\xb1|\njoin-no-separator=abc\n"
+        "lines-empty=true\nlines-one=true\nlines-many=true\nlines-no-final-lf=true\n"
+        "lines-lf=true\nlines-two-lf=true\nlines-cr=true\nlines-scalar=true\n"
+        "unlines-empty=true\nunlines-one=true\nunlines-many=true\nunlines-keeps-lf=true\nroundtrip=true\n"),
+    LIB_OK("ints-helpers.tfd",
+        "sum-empty=0\nsum-one=7\nsum-many=5\nsum-min=-9223372036854775808\n"
+        "sum-max=9223372036854775807\nsum-extrema=-1\nsum-left=9223372036854775807\n"
+        "summary-empty=none\nsummary-one=1,7,7,7\nsummary-many=5,5,-5,8\n"
+        "summary-min=1,-9223372036854775808,-9223372036854775808,-9223372036854775808\n"
+        "summary-max=1,9223372036854775807,9223372036854775807,9223372036854775807\n"
+        "summary-extrema=2,-1,-9223372036854775808,9223372036854775807\nsummary-zeros=3,0,0,0\n"
+        "summary-left=3,-9223372036854775808,-9223372036854775808,1\nsummary-public=true\n"),
+    LIB_FAULT("sum-overflow.tfd","R001","stdlib/ints.tfd","total + value })",6,"+"),
+    LIB_FAULT("sum-underflow.tfd","R001","stdlib/ints.tfd","total + value })",6,"+"),
+    LIB_FAULT("summary-overflow.tfd","R001","stdlib/ints.tfd","held.total + value",11,"+"),
+    LIB_FAULT("summary-underflow.tfd","R001","stdlib/ints.tfd","held.total + value",11,"+"),
+    LIB_FAULT("sum-argument-order.tfd","R002",NULL,"1 div 0",2,"div"),
+    LIB_FAULT("text-argument-order.tfd","R002",NULL,"1 div 0",2,"div")
 };
+#undef LIB_FAULT
+#undef LIB_OK
 #undef OK
 #undef IO
 #undef FAULT
@@ -154,6 +183,26 @@ static Bytes read_bytes(const char *path) {
     CHECK(fgetc(f)==EOF && feof(f)); CHECK(fclose(f)==0);
     result.data[result.length]='\0';
     return result;
+}
+static bool library_staged;
+static void stage_library(bool cleanup) {
+    static const char *const names[]={"text.tfd","ints.tfd"};
+    char directory[PATH_CAP],original[PATH_CAP],copy[PATH_CAP];
+    join(directory,work,"stdlib");
+    if (!cleanup) {
+        if (library_staged) return;
+        CHECK(MAKE_DIR(directory)==0);
+    } else if (!library_staged) return;
+    for (size_t i=0;i<sizeof names/sizeof *names;++i) {
+        join(original,"stdlib",names[i]); join(copy,directory,names[i]);
+        if (cleanup) CHECK(remove(copy)==0);
+        else {
+            const Bytes bytes=read_bytes(original);
+            write_bytes(copy,bytes.data,bytes.length); free(bytes.data);
+        }
+    }
+    if (cleanup) CHECK(REMOVE_DIR(directory)==0);
+    library_staged=!cleanup;
 }
 static void expect(const char *path, const char *expected, size_t length) {
     const Bytes actual=read_bytes(path);
@@ -288,6 +337,23 @@ static void run(const char *const args[], int expected) {
         free(diagnostic.data);
         CHECK(false);
     }
+}
+static void remove_native(void) {
+#ifdef _WIN32
+    /* A completed image can briefly remain open on Windows. Retry only
+     * access/sharing failures, then report the exact host status. */
+    DWORD error=0;
+    for (unsigned i=0;i<20;++i) {
+        if (DeleteFileA(native)) return;
+        error=GetLastError();
+        if (error!=ERROR_SHARING_VIOLATION && error!=ERROR_ACCESS_DENIED) break;
+        Sleep(25);
+    }
+    fprintf(stderr,"delete native output: Windows error %lu\n",(unsigned long)error);
+    CHECK(false);
+#else
+    CHECK(remove(native)==0);
+#endif
 }
 static void build(const char *compiler, const char *cc, const char *root,
                   const char *source, const char *module_root, bool sanitize, int expected) {
@@ -427,13 +493,25 @@ static void native_fault(const char *expected) {
 static void differential(const char *compiler, const char *cc, const char *root, bool sanitize) {
     char previous[PATH_CAP]="";
     for (size_t i=0;i<sizeof cases/sizeof *cases;++i) {
-        const Case *test=&cases[i];
-        current=test->source;
-        const char *module_root=strncmp(current,"examples/",sizeof "examples/"-1)==0 ? "examples" :
+        Case invocation=cases[i];
+        const Case *test=&invocation;
+        char staged[PATH_CAP];
+        current=cases[i].source;
+        if (test->staged_library) {
+            stage_library(false);
+            const char *leaf=strrchr(current,'/');
+            CHECK(leaf!=NULL && leaf[1]!='\0');
+            join(staged,work,leaf+1);
+            const Bytes bytes=read_bytes(current);
+            write_bytes(staged,bytes.data,bytes.length); free(bytes.data);
+            invocation.source=staged;
+        }
+        const char *module_root=test->staged_library ? work :
+            strncmp(current,"examples/",sizeof "examples/"-1)==0 ? "examples" :
             strncmp(current,M09,sizeof M09-1)==0 ? "tests/fixtures/types" : "tests/fixtures/differential";
         if (strcmp(previous,current)!=0) {
-            if (*previous!='\0') CHECK(remove(native)==0);
-            build(compiler,cc,root,current,module_root,sanitize,0);
+            if (*previous!='\0') remove_native();
+            build(compiler,cc,root,test->source,module_root,sanitize,0);
             expect(err,"",0);
             CHECK(strlen(current)<sizeof previous);
             (void)strcpy(previous,current);
@@ -441,7 +519,7 @@ static void differential(const char *compiler, const char *cc, const char *root,
         const bool with_input=test->stdin_bytes!=NULL;
         if (with_input) write_bytes(input,test->stdin_bytes,test->stdin_size);
         const int status=test->bad_input ? 2 : test->code!=NULL ? 3 : 0;
-        interpreter(compiler,current,module_root,with_input,status);
+        interpreter(compiler,test->source,module_root,with_input,status);
         expect(out,test->output,test->output_size);
         char *fault=malloc(BYTE_CAP);
         CHECK(fault!=NULL);
@@ -455,8 +533,9 @@ static void differential(const char *compiler, const char *cc, const char *root,
         else if (test->code!=NULL) native_fault(fault);
         else expect(err,"",0);
         free(fault);
+        if (test->staged_library) CHECK(remove(staged)==0);
     }
-    CHECK(remove(native)==0);
+    remove_native();
 }
 
 static void absent(const char *path) {
@@ -480,14 +559,14 @@ static void bad_builds(const char *compiler, const char *cc, const char *root,
         write_bytes(native,stale,sizeof stale-1);
         build(compiler,cc,root,current,invalid[i].module_root,sanitize,1);
         contains(err,invalid[i].needle); expect(native,stale,sizeof stale-1);
-        CHECK(remove(native)==0);
+        remove_native();
     }
     current="failed downstream C compiler";
     write_bytes(native,stale,sizeof stale-1);
     build(compiler,self,root,"examples/intro/hello.tfd","examples",sanitize,2);
     contains(err,"differential fake compiler wrote a partial executable");
     expect(native,stale,sizeof stale-1);
-    CHECK(remove(native)==0);
+    remove_native();
 }
 
 static void source_alias(const char *compiler, const char *cc, const char *root, bool sanitize) {
@@ -509,6 +588,25 @@ static void source_alias(const char *compiler, const char *cc, const char *root,
     expect(out,"",0); contains(err,"aliases a Ternfold source");
     expect(source,program,sizeof program-1);
     CHECK(remove(source)==0);
+}
+
+static void library_rejections(const char *compiler,const char *cc,const char *root,bool sanitize) {
+    static const struct { const char *file,*json,*text; } invalid[]={
+        {"invalid-lines-type.tfd","\"code\":\"E302\"","error[E302]"},
+        {"invalid-sum-type.tfd","\"code\":\"E302\"","error[E302]"},
+        {"invalid-private-type.tfd","\"code\":\"E206\"","error[E206]"}
+    };
+    for (size_t i=0;i<sizeof invalid/sizeof *invalid;++i) {
+        char original[PATH_CAP],copy[PATH_CAP];
+        current=invalid[i].file;
+        join(original,LIB,invalid[i].file); join(copy,work,invalid[i].file);
+        const Bytes bytes=read_bytes(original);
+        write_bytes(copy,bytes.data,bytes.length); free(bytes.data);
+        const char *const check[]={compiler,"check",copy,"--root",work,"--diagnostics-json",NULL};
+        run(check,1); expect(out,"",0); contains(err,invalid[i].json);
+        build(compiler,cc,root,copy,work,sanitize,1); contains(err,invalid[i].text); absent(native);
+        CHECK(remove(copy)==0);
+    }
 }
 
 /* A real downstream failure after writing into the compiler's private stage. */
@@ -537,10 +635,12 @@ int main(int argc, char **argv) {
     differential(argv[1],argv[2],argv[3],argc==5);
     bad_builds(argv[1],argv[2],argv[3],argv[0],argc==5);
     source_alias(argv[1],argv[2],argv[3],argc==5);
+    library_rejections(argv[1],argv[2],argv[3],argc==5);
     current="cleanup";
+    stage_library(true);
     CHECK(remove(out)==0); CHECK(remove(err)==0); CHECK(remove(input)==0);
     CHECK(REMOVE_DIR(work)==0);
-    printf("differential: %zu execution cases, 4 build rejection cases and 2 alias checks passed\n",
+    printf("differential: %zu execution cases, 4 build rejections, 2 alias checks and 3 library rejections passed\n",
            sizeof cases/sizeof *cases);
     return 0;
 }

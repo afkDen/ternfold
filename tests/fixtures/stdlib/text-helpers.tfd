@@ -1,0 +1,22 @@
+import "stdlib/text.tfd" as text;
+
+pub fn main() -> List[Text] {
+    let parts = ["", "one", "", "🙂\u{0}ñ", ""];
+    ["join-empty=" ++ text::join([], "unused"),
+     "join-one=" ++ text::join(["🙂\u{0}ñ"], "unused"),
+     "join-many=" ++ text::join(parts, "|"),
+     "join-no-separator=" ++ text::join(["a", "b", "c"], ""),
+     "lines-empty=" ++ bool_text(text::lines("") == []),
+     "lines-one=" ++ bool_text(text::lines("🙂\u{0}ñ") == ["🙂\u{0}ñ"]),
+     "lines-many=" ++ bool_text(text::lines("\na\n\n🙂\u{0}ñ\n") == ["", "a", "", "🙂\u{0}ñ"]),
+     "lines-no-final-lf=" ++ bool_text(text::lines("a\nb") == ["a", "b"]),
+     "lines-lf=" ++ bool_text(text::lines("\n") == [""]),
+     "lines-two-lf=" ++ bool_text(text::lines("\n\n") == ["", ""]),
+     "lines-cr=" ++ bool_text(text::lines("a\r\nb\r") == ["a\r", "b\r"]),
+     "lines-scalar=" ++ bool_text(text::lines("e\u{301}\n🙂\n\u{0}") == ["e\u{301}", "🙂", "\u{0}"]),
+     "unlines-empty=" ++ bool_text(text::unlines([]) == ""),
+     "unlines-one=" ++ bool_text(text::unlines([""]) == "\n"),
+     "unlines-many=" ++ bool_text(text::unlines(["a", "", "🙂\u{0}ñ"]) == "a\n\n🙂\u{0}ñ\n"),
+     "unlines-keeps-lf=" ++ bool_text(text::unlines(["a\n"]) == "a\n\n"),
+     "roundtrip=" ++ bool_text(text::lines(text::unlines(parts)) == parts)]
+}

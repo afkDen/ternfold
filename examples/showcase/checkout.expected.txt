@@ -1,0 +1,24 @@
+Checkout: reserve stock, then charge wallet
+original stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0
+both accept
+stock reserved=2 from=0 available=4
+wallet charged=10 from=0 balance=20
+after stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0
+second rejects: Wallet.Insufficient(25,20)
+retained stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0
+first rejects: Stock.Insufficient(5,4)
+retained stock=4 reserved=2 prior_reserved=0 wallet=20 spent=10 prior_spent=0
+zero rejects: Stock.InvalidQuantity(0)
+retained stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0
+fold: accept, wallet reject, exact exhaustion
+stock reserved=2 from=0 available=4
+wallet charged=10 from=0 balance=20
+rejected Wallet.Insufficient(25,20)
+stock reserved=6 from=2 available=0
+wallet charged=20 from=10 balance=0
+folded stock=0 reserved=6 prior_reserved=2 wallet=0 spent=30 prior_spent=10
+independent branch from original
+stock reserved=1 from=0 available=5
+wallet charged=3 from=0 balance=27
+branch stock=5 reserved=1 prior_reserved=0 wallet=27 spent=3 prior_spent=0
+original still stock=6 reserved=0 prior_reserved=0 wallet=30 spent=0 prior_spent=0

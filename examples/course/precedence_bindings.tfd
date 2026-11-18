@@ -1,0 +1,29 @@
+machine Meter(delta: Int) yields Text rejects Unit {
+    state total: Int = 10;
+    state doubled: Int = 20;
+    next doubled = next.total * 2;
+    next total = total + delta;
+    emit "old=" ++ int_text(total);
+    emit "proposed=" ++ int_text(next.total);
+}
+
+pub fn main() -> List[Text] {
+    let amount = 5;
+    let adjustment = { let amount = 7; amount * 2 };
+    let arithmetic = [
+        int_text(-2 ^ 2), int_text((-2) ^ 2), int_text(2 ^ 3 ^ 2),
+        int_text(1 + 2 * 3), int_text(20 div 3 * 3 + 20 % 3),
+        float_text(8 / 2 / 2),
+        bool_text(!false && 2 < 3 || false),
+        bool_text(false && 1 div 0 == 0 || true)
+    ];
+    let bindings = [int_text(amount + adjustment), int_text(amount)];
+    let original = Meter();
+    let transition = match step(original, 3) {
+        Decision::Accept(published, lines) => {
+            lines ++ [int_text(published.doubled), int_text(original.total)]
+        },
+        Decision::Reject(_, _) => { ["unexpected rejection"] }
+    };
+    arithmetic ++ bindings ++ transition
+}

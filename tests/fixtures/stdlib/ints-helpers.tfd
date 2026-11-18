@@ -1,0 +1,36 @@
+import "stdlib/ints.tfd" as ints;
+import "stdlib/text.tfd" as text;
+
+fn report(values: List[Int]) -> Text {
+    match ints::summary(values) {
+        Option::None => { "none" },
+        Option::Some(result) => {
+            text::join([int_text(result.count), int_text(result.total),
+                        int_text(result.minimum), int_text(result.maximum)], ",")
+        }
+    }
+}
+
+pub fn main() -> List[Text] {
+    let lowest = -9223372036854775808;
+    let highest = 9223372036854775807;
+    let sum_call: fn(List[Int]) -> Int = ints::sum;
+    let summary_call: fn(List[Int]) -> Option[ints::Summary] = ints::summary;
+    ["sum-empty=" ++ int_text(sum_call([])),
+     "sum-one=" ++ int_text(ints::sum([7])),
+     "sum-many=" ++ int_text(ints::sum([3, -5, 8, 0, -1])),
+     "sum-min=" ++ int_text(ints::sum([lowest])),
+     "sum-max=" ++ int_text(ints::sum([highest])),
+     "sum-extrema=" ++ int_text(ints::sum([highest, lowest])),
+     "sum-left=" ++ int_text(ints::sum([-1, highest, 1])),
+     "summary-empty=" ++ report([]),
+     "summary-one=" ++ report([7]),
+     "summary-many=" ++ report([3, -5, 8, 0, -1]),
+     "summary-min=" ++ report([lowest]),
+     "summary-max=" ++ report([highest]),
+     "summary-extrema=" ++ report([highest, lowest]),
+     "summary-zeros=" ++ report([0, 0, 0]),
+     "summary-left=" ++ report([1, lowest, -1]),
+     "summary-public=" ++ bool_text(summary_call([2, -3]) ==
+         Option::Some(ints::Summary(count: 2, total: -1, minimum: -3, maximum: 2)))]
+}
