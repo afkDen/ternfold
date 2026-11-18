@@ -434,6 +434,17 @@ static void test_examples(const char *exe) {
         CHECK(spawn(args,CAPTURE,CAPTURE) == (expected_check_error == NULL ? 0 : 1));
         if (expected_check_error != NULL) contains(error_path,expected_check_error);
         else contains(error_path,"\"diagnostics\":[]");
+        const char *core[] = {exe,"core",path,"--root","examples","--diagnostics-json",NULL};
+        const int core_status = spawn(core,CAPTURE,CAPTURE);
+        const int expected_status = expected_check_error == NULL ? 0 : 1;
+        if (core_status != expected_status) {
+            char *diagnostics = read_text(error_path);
+            fprintf(stderr,"core example %s: %s\n",examples[i],diagnostics);
+            free(diagnostics);
+        }
+        CHECK(core_status == expected_status);
+        if (expected_check_error != NULL) { equal(output_path,""); contains(error_path,expected_check_error); }
+        else { contains(output_path,"Core entry=f"); contains(error_path,"\"diagnostics\":[]"); }
     }
     CHECK(tokens(exe,"examples/lexical/complete.tfd",false,false,root) == 0);
     {
@@ -494,6 +505,28 @@ static void test_plan_cli(const char *exe) {
     CHECK(spawn(errors,CAPTURE,CAPTURE) == 0);
     contains(output_path,"Machine plan;");
     absent(table);
+}
+static void test_core_cli(const char *exe) {
+    char entry[PATH_CAPACITY], table[PATH_CAPACITY];
+    join_path(entry,root,"core root.tfd"); join_path(table,root,"Symbol Table.txt");
+    const char *args[] = {exe,"core",entry,"--diagnostics-json",NULL};
+    const char *json[] = {exe,"core",entry,"--json",NULL};
+    const char *symbol[] = {exe,"core",entry,"--symbol-table",root,NULL};
+    write_text(entry,"pub fn main() -> List[Text] { input x: Text; output x; [x] }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==0);
+    contains(output_path,"name=\"$entry\""); contains(output_path,"InputAt index=0");
+    contains(output_path,"Binary concat"); contains(error_path,"\"diagnostics\":[]");
+    char *first=read_text(output_path);
+    CHECK(spawn(args,CAPTURE,CAPTURE)==0); equal(output_path,first); free(first);
+    CHECK(spawn(args,BROKEN_PIPE,CAPTURE)==2);
+    CHECK(spawn(json,CAPTURE,CAPTURE)==2);
+    CHECK(spawn(symbol,CAPTURE,CAPTURE)==2); absent(table);
+
+    write_text(entry,"pub fn main() -> List[Text] { output \"prefix\"; main() }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==1); equal(output_path,""); contains(error_path,"\"code\":\"E208\"");
+    write_text(entry,"pub fn main() -> List[Text] { [\"pure\"] } fn f() -> List[Text] { main() }");
+    CHECK(spawn(args,CAPTURE,CAPTURE)==0);
+    contains(output_path,"ordinary name=\"main\""); contains(output_path," = Call f");
 }
 static void test_ast_cli(const char *exe) {
     char path[PATH_CAPACITY], table[PATH_CAPACITY];
@@ -577,7 +610,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 2); setup();
     test_goldens(argv[1]); test_payloads(argv[1]); test_errors_caps(argv[1]);
     test_usage_host(argv[1]); test_examples(argv[1]); test_writer_no_allocations();
-    test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]);
+    test_ast_cli(argv[1]); test_check_cli(argv[1]); test_plan_cli(argv[1]); test_core_cli(argv[1]);
     (void)printf("tokens CLI: %zu checks passed, %zu token invocations, all 24 examples\nfixtures: %s\n",checks,cases,root);
     return 0;
 }

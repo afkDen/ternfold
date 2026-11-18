@@ -148,8 +148,10 @@ static void inspect_wrappers(const TfCoreProgramData *d) {
     CHECK(ints!=chars && chars!=format && ints!=format);
     CHECK(ints==nth(b,8,TF_CORE_OP_CLOSURE)->operation.as.function);
     const TfCoreFunction *wrapper=tf_core_function(d,format);
-    CHECK(wrapper!=NULL && wrapper->capture_count==0 && wrapper->parameter_count==1);
-    CHECK(nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN)->operation.as.builtin.id==TF_CORE_BUILTIN_INT_TEXT);
+    CHECK(wrapper!=NULL && wrapper->capture_count==0 && wrapper->parameter_count==1 &&
+          wrapper->kind==TF_CORE_FUNCTION_PRELUDE_WRAPPER && wrapper->span==0);
+    const TfCoreLet *wrapped=nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN);
+    CHECK(wrapped->operation.as.builtin.id==TF_CORE_BUILTIN_INT_TEXT && wrapped->span==0);
     wrapper=tf_core_function(d,ints);
     const TfCoreLet *int_len=nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_BUILTIN);
     wrapper=tf_core_function(d,chars);
@@ -244,12 +246,30 @@ static void inspect_machines(const TfCoreProgramData *d) {
 
     b=tf_core_block(callable,callable->body);
     const TfCoreFunction *wrapper=tf_core_function(d,nth(b,0,TF_CORE_OP_CLOSURE)->operation.as.function);
-    CHECK(wrapper!=NULL && wrapper->capture_count==0);
+    CHECK(wrapper!=NULL && wrapper->capture_count==0 && wrapper->kind==TF_CORE_FUNCTION_PRELUDE_WRAPPER);
     CHECK(nth(tf_core_block(wrapper,wrapper->body),0,TF_CORE_OP_CALL)->operation.as.function==step_id);
     size_t decisions=0;
     for (size_t i=0; i<d->type_count; ++i)
         if (d->types[i].kind==TF_CORE_TYPE_DECISION) ++decisions;
     CHECK(decisions==2); /* Unused still receives its own generated step and result. */
+}
+
+static void inspect_wrapper_origins(const TfCoreProgramData *d) {
+    CHECK(d!=NULL && d->function_count==3 && d->entry!=0);
+    const TfCoreFunction *main_fn=tf_core_function(d,d->entry), *lib=find(d,"never_called");
+    const TfCoreBlock *root=tf_core_block(main_fn,main_fn->body);
+    const TfCoreFunctionId id=nth(root,0,TF_CORE_OP_CLOSURE)->operation.as.function;
+    CHECK(nth(tf_core_block(lib,lib->body),0,TF_CORE_OP_CLOSURE)->operation.as.function==id);
+    const TfCoreFunction *wrapper=tf_core_function(d,id);
+    const TfCoreBlock *b=tf_core_block(wrapper,wrapper->body);
+    CHECK(wrapper->kind==TF_CORE_FUNCTION_PRELUDE_WRAPPER && wrapper->span==0 && b->span==0);
+    const TfCoreLet *built=nth(b,0,TF_CORE_OP_BUILTIN), *call=nth(root,3,TF_CORE_OP_CALL_CLOSURE);
+    CHECK(built->span==0 && built->operation.as.builtin.id==TF_CORE_BUILTIN_RANGE);
+    const TfSpan *source=tf_core_span(d,call->span);
+    const char syntax[]="r(-9223372036854775808, 1)";
+    CHECK(source!=NULL && strstr(source->source->name,"core-wrapper-root.tfd")!=NULL &&
+          source->end-source->start==sizeof syntax-1 &&
+          memcmp(source->source->bytes+source->start,syntax,sizeof syntax-1)==0);
 }
 
 static TfVerifiedCore *verify(TfCoreProgram *program) {
@@ -293,12 +313,6 @@ int main(void) {
     inspect(tf_verified_core_data(verified));
     tf_verified_core_destroy(verified); tf_core_program_destroy(core);
 
-    f=prepare(manager,"tests/fixtures/types/core-match-pending.tfd");
-    CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_HOST_ERROR && core==NULL);
-    CHECK(issue.code==TF_CORE_LOWER_UNSUPPORTED_FORM && issue.span.source!=NULL &&
-          memcmp(issue.span.source->bytes+issue.span.start,"match",5)==0);
-    release(f);
-
     f=prepare(manager,"tests/fixtures/types/core-entry.tfd");
     allocations+=failpoints(f);
     CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
@@ -329,6 +343,13 @@ int main(void) {
     release(f);
     verified=verify(core);
     inspect_machines(tf_verified_core_data(verified));
+    tf_verified_core_destroy(verified); tf_core_program_destroy(core);
+
+    f=prepare(manager,"tests/fixtures/types/core-wrapper-root.tfd");
+    CHECK(tf_core_lower(&core,f.machines,NULL,&issue)==TF_OK);
+    release(f);
+    verified=verify(core);
+    inspect_wrapper_origins(tf_verified_core_data(verified));
     tf_verified_core_destroy(verified); tf_core_program_destroy(core);
     tf_source_manager_destroy(manager);
     printf("Core lowering: %zu checks, %zu injected allocation failures\n",checks,allocations);

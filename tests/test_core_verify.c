@@ -323,6 +323,29 @@ static void calls_and_builtins(void) {
     expect(data, TF_CORE_VERIFY_OPERATION); /* correct Bool result, but no equality for closures */
 }
 
+static void wrapper_protocol(void) {
+    TfCoreProgramData data = program();
+    const TfCoreParameter p = {.value = 1, .type = INT};
+    TfCoreLet body = bind(2, TEXT, (TfCoreOperation){TF_CORE_OP_BUILTIN, VALUES(1),
+                           {.builtin = {TF_CORE_BUILTIN_INT_TEXT, {0}}}});
+    TfCoreBlock wrapper = block(&body, 1, 2);
+    TfCoreLet caller = bind(1, MAP_FN, (TfCoreOperation){.kind = TF_CORE_OP_CLOSURE, .as.function = 1});
+    TfCoreBlock caller_block = block(&caller, 1, 1);
+    TfCoreFunction fns[] = {ordinary(&p, 1, TEXT, &wrapper, 1, 2),
+                            ordinary(NULL, 0, MAP_FN, &caller_block, 1, 1)};
+    fns[0].kind = TF_CORE_FUNCTION_PRELUDE_WRAPPER;
+    data.functions = fns; data.function_count = COUNT(fns);
+    expect(data, TF_CORE_VERIFY_NONE);
+    body.span = 1; expect(data, TF_CORE_VERIFY_FUNCTION); body.span = 0;
+    wrapper.terminator.value = 1; expect(data, TF_CORE_VERIFY_FUNCTION); wrapper.terminator.value = 2;
+    body.operation.operands = VALUES(2); expect(data, TF_CORE_VERIFY_FUNCTION);
+    body.operation.operands = VALUES(1);
+    caller = bind(2, TEXT, (TfCoreOperation){TF_CORE_OP_CALL, VALUES(1), {.function = 1}});
+    caller_block.terminator.value = 2;
+    fns[1] = ordinary(&p, 1, TEXT, &caller_block, 1, 2);
+    expect(data, TF_CORE_VERIFY_OPERATION);
+}
+
 static void scopes(void) {
     TfCoreProgramData data = program();
     const TfCoreParameter p[] = {{.value = 1, .type = BOOL}, {.value = 2, .type = INTS}};
@@ -782,6 +805,7 @@ int main(void) {
     metadata();
     ordinary_operations();
     calls_and_builtins();
+    wrapper_protocol();
     scopes();
     tag_proofs();
     bool_proofs();

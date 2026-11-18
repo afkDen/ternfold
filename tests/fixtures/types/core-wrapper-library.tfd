@@ -1,0 +1,1 @@
+pub fn never_called() -> fn(Int, Int) -> List[Int] { range }

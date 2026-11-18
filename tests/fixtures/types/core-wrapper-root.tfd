@@ -1,0 +1,7 @@
+import "core-wrapper-library.tfd" as library;
+
+pub fn main() -> List[Text] {
+    let r = range;
+    let _: List[Int] = r(-9223372036854775808, 1);
+    []
+}
